@@ -1,105 +1,205 @@
+<div align="center">
+
 # AlgoFoundry
 
-A self-hosted bridge that turns **TradingView alerts** into **Interactive Brokers**
-orders, with a web GUI for position sizing, IBKR connection setup, monitoring,
-and a kill switch.
+**A self-hosted bridge that turns TradingView alerts into Interactive Brokers orders — with a web dashboard for sizing, connection setup, monitoring, and a one-click kill switch.**
+
+</div>
+
+---
+
+## Overview
+
+AlgoFoundry receives webhook alerts from TradingView indicators, applies
+position-aware risk gating, and routes the resulting orders to Interactive
+Brokers through [`ib_async`](https://github.com/ib-api-reloaded/ib_async). It runs
+as a single FastAPI service with an HTMX dashboard — no cloud SaaS, no monthly
+relay fees, full control of your own keys and execution.
 
 ```
-TradingView indicator (alert) ──HTTPS POST──▶ AlgoFoundry webhook
-                                                   │
-                                          position-aware gating
-                                                   │
-                                            ib_async ──▶ IB Gateway / TWS ──▶ IBKR
+TradingView indicator (alert)
+        │  HTTPS POST (JSON + shared secret)
+        ▼
+AlgoFoundry  ──►  webhook auth  ──►  position-aware gating
+        │
+        ▼
+   ib_async  ──►  IB Gateway / TWS (API mode)  ──►  Interactive Brokers
 ```
 
-The strategy is **long-only swing trading on the 4-hour timeframe**:
+The **bridge is the source of truth for position state**. On every signal it reads
+your live IBKR positions and acts accordingly:
 
-- **Entry (buy):** unfiltered ATR trailing-stop flip to long (`pine/entry_indicator.pine`).
-- **Exit (sell):** take-profit on a strong bearish close after an RSI overbought
-  cross-under (`pine/exit_indicator.pine`).
+- a **BUY** is executed only if you are currently *flat* in that symbol;
+- a **SELL** is executed only if you currently *hold* that symbol.
 
-The **bridge owns position state** (it reads live positions from IBKR on every
-signal): a BUY is acted on only if you're flat in that symbol, a SELL only if you
-hold it. That's why the Pine exit signal is stateless — see the note in the exit
-script.
+Because state is reconciled against the broker on every signal, a restart or a
+manual trade can't desync the system. This is also why the TradingView exit signal
+is intentionally **stateless** — the indicator detects the take-profit condition,
+and the bridge decides whether to act on it.
 
-## Components
+## Features
 
-| File | Purpose |
-|------|---------|
-| `app/main.py` | FastAPI app: `/webhook` (public, secret-auth) + web GUI (Basic-auth) |
-| `app/trading.py` | Signal gating: buy-if-flat / sell-if-holding, kill switch, caps |
-| `app/broker.py` | `ib_async` wrapper in a dedicated thread/loop; orders, positions, sizing |
-| `app/db.py` | SQLite settings (key-value) + event log |
-| `app/models.py` | Webhook payload schema |
-| `app/templates/` | HTMX dashboard |
-| `pine/` | TradingView entry & exit indicators with `alert()` calls |
+- **TradingView → IBKR automation** via a simple JSON webhook.
+- **Web dashboard** (sidebar layout): Trading, Event Log, and Settings tabs.
+- **Position-aware gating**: buy-if-flat / sell-if-holding, enforced server-side.
+- **Three sizing modes**: fixed shares, fixed dollars, or percent of equity.
+- **Risk guardrails**: per-position dollar cap, max concurrent positions,
+  per-side enable/disable, and a global kill switch.
+- **Live monitoring**: positions, open orders, account summary, and a full event
+  log of every signal and order.
+- **Manual execution**: buy / sell / flatten any symbol from the UI.
+- **Secure by design**: secret-authenticated webhook + HTTP Basic-auth dashboard,
+  intended to run behind a tunnel or VPN.
+- **Persistent config**: all settings stored in SQLite, surviving restarts.
 
-## Setup
+## Included strategy
 
-### 1. Install
+The repository ships a reference **long-only swing strategy for the 4-hour
+timeframe**, as two TradingView indicators:
+
+| Indicator | Signal |
+|-----------|--------|
+| `pine/entry_indicator.pine` | **Buy** — unfiltered ATR trailing-stop flip to long |
+| `pine/exit_indicator.pine`  | **Sell** — take-profit on a strong bearish close after an RSI overbought cross-under |
+
+Both fire on **bar close** (`alert.freq_once_per_bar_close`) to avoid intrabar
+repainting. The bridge is strategy-agnostic, so you can point any indicator that
+emits `buy`/`sell` webhooks at it.
+
+## Tech stack
+
+FastAPI · Jinja2 + HTMX · `ib_async` · SQLite · Pine Script v5
+
+## Project structure
+
+```
+AlgoFoundry/
+├── app/
+│   ├── main.py          # FastAPI app: /webhook (public) + dashboard (Basic-auth)
+│   ├── trading.py       # Signal gating: buy-if-flat / sell-if-holding, caps
+│   ├── broker.py        # ib_async wrapper in a dedicated thread/loop
+│   ├── db.py            # SQLite settings (key-value) + event log
+│   ├── models.py        # Webhook payload schema
+│   ├── templates/       # HTMX dashboard + fragments
+│   └── static/          # Logo assets
+├── pine/                # TradingView entry & exit indicators
+├── requirements.txt
+├── run.sh
+└── .env.example
+```
+
+## Prerequisites
+
+- Python 3.10+
+- An Interactive Brokers account with **IB Gateway** or **TWS** (start with paper).
+- A **paid TradingView plan** (Plus or higher) — webhook alerts are not available
+  on the free tier.
+
+## Installation
+
 ```bash
+git clone https://github.com/<your-username>/AlgoFoundry.git
 cd AlgoFoundry
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # then edit ALGOFOUNDRY_USER / PASSWORD
+cp .env.example .env        # then edit ALGOFOUNDRY_USER / ALGOFOUNDRY_PASSWORD
 ```
 
-### 2. Run IB Gateway (paper first)
-- Install **IB Gateway**, log into your **paper** account.
-- Configure → API → Settings: enable *ActiveX and Socket Clients*, socket port
-  **4002** (paper) / **4001** (live), add `127.0.0.1` to trusted IPs.
-- For unattended operation, run it under **IBC** (https://github.com/IbcAlpha/IBC)
-  so it auto-logs-in and survives the daily restart.
+## Configuration
 
-### 3. Start AlgoFoundry
+Runtime settings live in the dashboard (stored in SQLite). `.env` only holds
+bootstrap values:
+
+| Variable | Description |
+|----------|-------------|
+| `ALGOFOUNDRY_HOST` / `ALGOFOUNDRY_PORT` | Where the GUI/server binds (default `127.0.0.1:8000`) |
+| `ALGOFOUNDRY_USER` / `ALGOFOUNDRY_PASSWORD` | Dashboard login credentials |
+| `ALGOFOUNDRY_WEBHOOK_SECRET` | Optional fixed webhook secret (auto-generated if blank) |
+| `ALGOFOUNDRY_DB` | SQLite database path |
+
+## Usage
+
+### 1. Run IB Gateway (paper first)
+
+Log into your **paper** account, then under **Configure → Settings → API**:
+enable *ActiveX and Socket Clients*, set the socket port (**4002** paper / **4001**
+live for Gateway; 7497 / 7496 for TWS), and add `127.0.0.1` to trusted IPs. For
+unattended operation, run it under [IBC](https://github.com/IbcAlpha/IBC) so it
+auto-logs-in and survives the required daily restart.
+
+### 2. Start AlgoFoundry
+
 ```bash
-./run.sh      # serves the GUI on http://127.0.0.1:8000
+./run.sh        # dashboard at http://127.0.0.1:8000
 ```
-Open the GUI (log in with the credentials from `.env`), set your sizing/ports,
-click **Connect**. Flip **Trading enabled** ON only when you're ready.
 
-### 4. Expose the webhook (HTTPS)
-TradingView needs a public HTTPS URL. Do **not** expose the GUI publicly — only
-`/webhook`. Two clean options:
-- **Cloudflare Tunnel** from the box running AlgoFoundry (no open ports), or
-- A **VPS** with **Caddy** in front for automatic TLS.
+Log in, set your ports and sizing in **Settings**, click **Connect**, then enable
+**Trading** only when you're ready.
 
-Then IP-allowlist TradingView's published webhook source IPs at the proxy, and
-keep the shared `secret` (shown in the GUI) in every alert payload.
+### 3. Expose the webhook over HTTPS
 
-### 5. TradingView alerts
-- Add both indicators from `pine/` to your 4H chart; paste the **same secret**
-  into each indicator's "Webhook secret" input (matches the GUI value).
-- Create an alert on each: condition = **"Any alert() function call"**,
-  **Once Per Bar Close**, Webhook URL = `https://YOUR-DOMAIN/webhook`.
-- Webhooks require a **paid TradingView plan** (Plus or higher).
+TradingView needs a public HTTPS endpoint. Expose **only** `/webhook` — never the
+dashboard. Recommended options:
 
-## Webhook payload
+- **Cloudflare Tunnel** from the host running AlgoFoundry (no open inbound ports), or
+- a **VPS** with **Caddy** in front for automatic TLS.
+
+Additionally, IP-allowlist TradingView's published webhook source IPs at your
+reverse proxy, and keep the shared secret in every alert payload.
+
+### 4. Create TradingView alerts
+
+Add the indicators from `pine/` to your chart and paste the shared secret (shown
+in **Settings → Webhook**) into each indicator's *Webhook secret* input. Create an
+alert on each with condition **"Any alert() function call"**, frequency **Once Per
+Bar Close**, and Webhook URL `https://YOUR-DOMAIN/webhook`.
+
+## Webhook API
+
+`POST /webhook`
+
 ```json
 { "action": "buy",  "symbol": "AAPL", "secret": "YOUR_SECRET" }
 { "action": "sell", "symbol": "AAPL", "secret": "YOUR_SECRET" }
 ```
-Optional `"qty": 10` overrides the GUI sizing. `symbol` can be `{{ticker}}`.
 
-## Sizing modes (GUI)
-- **Fixed shares** — buy exactly N shares.
-- **Fixed dollars** — buy `floor(dollars / price)` shares (default).
-- **% of equity** — buy `floor(NetLiq * pct% / price)` shares.
+`symbol` may use the TradingView placeholder `{{ticker}}`. An optional
+`"qty": 10` overrides the dashboard sizing for that order.
 
-All capped by **Max $ / position** and **Max positions**.
+## Sizing modes
 
-## Safety notes
-- Start on **paper** (port 4002) and leave it running for a few weeks before live.
-- The **kill switch** sets `trading_enabled = false` instantly; new signals are
-  rejected (existing positions are not auto-closed — use Manual → Flatten).
-- One IBKR username = one API session. Give the bot its own login / dedicated
-  client ID so it doesn't fight a manual TWS session.
-- This is trading software you operate at your own risk; verify every behaviour
-  on paper before risking capital. Not financial advice.
+| Mode | Shares ordered |
+|------|----------------|
+| Fixed shares | exactly *N* shares |
+| Fixed dollars *(default)* | `floor(dollars / price)` |
+| % of equity | `floor(NetLiquidation × pct% / price)` |
 
-## Roadmap / known follow-ups
-- You mentioned fixing the Pine exit gate yourself — the version here already
-  removes the `isLong` dependency; adjust to taste.
-- Consider adding: bracket/stop-loss orders, Telegram/email fill notifications,
-  and a daily reconcile-on-startup log.
+Every order is additionally capped by **Max $ / position** and **Max positions**.
+
+## Security & safety
+
+- Start on **paper** and run it for a while before trading live.
+- The **kill switch** disables trading instantly; new signals are rejected
+  (existing positions are *not* auto-closed — use **Manual → Flatten**).
+- Bind the dashboard to localhost and reach it via a tunnel/VPN; expose only the
+  webhook endpoint publicly.
+- One IBKR username allows a single API session — give the bot its own login or a
+  dedicated client ID so it doesn't conflict with a manual TWS session.
+
+## Roadmap
+
+- Bracket / stop-loss order support.
+- Fill and error notifications (Telegram / email).
+- Daily reconcile-on-startup logging.
+- Optional Docker + IBC compose for fully unattended deployment.
+
+## Disclaimer
+
+AlgoFoundry is provided for educational purposes and is **not financial advice**.
+Automated trading carries significant risk, including the loss of capital. You are
+solely responsible for any orders placed through this software. Test thoroughly on
+a paper account and use at your own risk.
+
+## License
+
+Released under the [MIT License](LICENSE).
