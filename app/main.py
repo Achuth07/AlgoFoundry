@@ -283,8 +283,8 @@ def api_regen_secret(_: str = Depends(require_login)) -> RedirectResponse:
 @app.get("/favicon.ico")
 def favicon() -> FileResponse:
     return FileResponse(
-        os.path.join(os.path.dirname(__file__), "static", "logo_mark.png"),
-        media_type="image/png",
+        os.path.join(os.path.dirname(__file__), "static", "favicon.ico"),
+        media_type="image/x-icon",
     )
 
 
