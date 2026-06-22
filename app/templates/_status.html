@@ -1,0 +1,28 @@
+{% if st.connected %}
+  <p style="margin-top:0">
+     <span class="badge on">CONNECTED</span>
+     <span class="badge {{ 'amber' if settings.mode_label=='live' else 'on' }}">{{ settings.mode_label | upper }}</span>
+     {% if settings.trading_enabled %}<span class="badge on">TRADING ON</span>
+     {% else %}<span class="badge off">TRADING OFF</span>{% endif %}
+  </p>
+  <table>
+    <tr><th>Account value (NetLiq)</th>
+        <td class="num">{{ '${:,.2f}'.format(summary.get('NetLiquidation', 0)) }}</td></tr>
+    <tr><th>Available funds</th>
+        <td class="num">{{ '${:,.2f}'.format(summary.get('AvailableFunds', 0)) }}</td></tr>
+    <tr><th>Buying power</th>
+        <td class="num">{{ '${:,.2f}'.format(summary.get('BuyingPower', 0)) }}</td></tr>
+    <tr><th>Cash</th>
+        <td class="num">{{ '${:,.2f}'.format(summary.get('TotalCashValue', 0)) }}</td></tr>
+    {% if st.accounts %}
+    <tr><th>Accounts</th><td class="mono">{{ st.accounts | join(', ') }}</td></tr>
+    {% endif %}
+  </table>
+{% else %}
+  <p style="margin-top:0"><span class="badge off">DISCONNECTED</span>
+     {% if settings.trading_enabled %}<span class="badge off">TRADING OFF (no connection)</span>{% endif %}
+  </p>
+  <p class="mut">Not connected to IB Gateway / TWS. Check that the Gateway is
+     running with the API enabled on port <span class="mono">{{ settings.ibkr_port }}</span>,
+     then click <b>Connect</b>.</p>
+{% endif %}

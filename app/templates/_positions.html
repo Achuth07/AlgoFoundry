@@ -1,0 +1,31 @@
+<div class="row">
+  <div>
+    <h2 style="margin-top:0">Positions</h2>
+    {% if positions %}
+    <table>
+      <tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Account</th></tr>
+      {% for p in positions %}
+      <tr><td><b>{{ p.symbol }}</b></td>
+          <td class="num">{{ p.qty }}</td>
+          <td class="num">{{ '%.2f' % p.avg_cost }}</td>
+          <td class="mut">{{ p.account }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="mut">Flat — no open positions.</p>{% endif %}
+  </div>
+  <div>
+    <h2 style="margin-top:0">Open Orders</h2>
+    {% if orders %}
+    <table>
+      <tr><th>Symbol</th><th>Action</th><th>Qty</th><th>Type</th><th>Status</th></tr>
+      {% for o in orders %}
+      <tr><td><b>{{ o.symbol }}</b></td>
+          <td>{% if o.action == 'BUY' %}<span class="badge on">{{ o.action }}</span>
+              {% else %}<span class="badge off">{{ o.action }}</span>{% endif %}</td>
+          <td class="num">{{ o.qty }}</td><td>{{ o.type }}</td>
+          <td class="mut">{{ o.status }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="mut">No working orders.</p>{% endif %}
+  </div>
+</div>

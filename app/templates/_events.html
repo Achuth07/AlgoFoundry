@@ -1,0 +1,17 @@
+<table>
+  <tr><th>Time</th><th>Kind</th><th>Action</th><th>Symbol</th><th>Status</th><th>Detail</th></tr>
+  {% for e in events %}
+  <tr>
+    <td class="mono mut">{{ e.ts | datetimeformat }}</td>
+    <td>{{ e.kind }}</td>
+    <td>{{ e.action or '' }}</td>
+    <td><b>{{ e.symbol or '' }}</b></td>
+    <td>
+      {% if e.status in ('rejected','error') %}<span class="badge off">{{ e.status }}</span>
+      {% elif e.status in ('received','accepted','Filled','Submitted') %}<span class="badge on">{{ e.status }}</span>
+      {% elif e.status %}<span class="badge amber">{{ e.status }}</span>{% endif %}
+    </td>
+    <td class="mut">{{ e.detail or '' }}</td>
+  </tr>
+  {% endfor %}
+</table>

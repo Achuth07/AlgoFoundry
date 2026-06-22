@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AlgoFoundry</title>
+  <link rel="icon" href="/static/logo_mark.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    :root {
+      --bg:#0d1618; --panel:#101e22; --card:#15252b; --card-hi:#1a2e35;
+      --line:#21353c; --line-hi:#2b454e;
+      --txt:#eaf2ef; --muted:#8aa39e; --faint:#5f7873;
+      --green:#2fcc40; --green-hi:#56e166; --green-dim:#1f9c30;
+      --red:#f0555a; --amber:#e6a93a;
+      --glow:rgba(47,204,64,.16);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+      --radius:14px;
+    }
+    * { box-sizing:border-box; }
+    html,body { height:100%; }
+    body {
+      margin:0; color:var(--txt); display:flex; min-height:100vh;
+      font-family:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+      font-size:14px; line-height:1.5; letter-spacing:-.01em;
+      background:
+        radial-gradient(900px 500px at 78% -10%, var(--glow), transparent 60%),
+        radial-gradient(700px 600px at 0% 110%, rgba(47,204,64,.06), transparent 55%),
+        var(--bg);
+      -webkit-font-smoothing:antialiased;
+    }
+    .mono, td .num { font-family:'JetBrains Mono',ui-monospace,monospace;
+                     font-variant-numeric:tabular-nums; }
+
+    /* ---------- Sidebar ---------- */
+    aside {
+      width:236px; flex:0 0 236px; background:linear-gradient(180deg,#10201f,#0e1a1d);
+      border-right:1px solid var(--line); display:flex; flex-direction:column;
+      position:sticky; top:0; height:100vh;
+    }
+    .brand { padding:22px 22px 16px; }
+    .brand img { width:158px; height:auto; display:block; }
+    .conn { display:flex; align-items:center; gap:9px; margin:2px 22px 12px;
+            padding:9px 12px; background:rgba(255,255,255,.02);
+            border:1px solid var(--line); border-radius:10px; font-size:12.5px; }
+    .conn .dot { width:9px; height:9px; border-radius:50%; background:var(--faint);
+                 box-shadow:0 0 0 0 rgba(0,0,0,0); transition:.3s; }
+    .conn.up .dot { background:var(--green); box-shadow:0 0 0 4px rgba(47,204,64,.18); }
+    .conn.down .dot { background:var(--red); box-shadow:0 0 0 4px rgba(240,85,90,.15); }
+    .conn .lbl { color:var(--muted); font-weight:500; }
+    nav { padding:8px 12px; flex:1; }
+    .navitem {
+      display:flex; align-items:center; gap:11px; width:100%; text-align:left;
+      background:transparent; border:none; color:var(--muted); position:relative;
+      padding:11px 13px; border-radius:10px; font-size:14px; font-weight:600;
+      cursor:pointer; margin-bottom:3px; transition:.15s; font-family:inherit;
+      letter-spacing:-.01em;
+    }
+    .navitem svg { width:18px; height:18px; stroke:currentColor; fill:none;
+                   stroke-width:1.9; flex:0 0 18px; }
+    .navitem:hover { background:rgba(255,255,255,.04); color:var(--txt); }
+    .navitem.active { background:rgba(47,204,64,.12); color:var(--green-hi); }
+    .navitem.active::before { content:""; position:absolute; left:-12px; top:9px;
+      bottom:9px; width:3px; border-radius:0 3px 3px 0; background:var(--green); }
+    .sidefoot { padding:14px; border-top:1px solid var(--line); }
+    .kill {
+      width:100%; display:flex; align-items:center; justify-content:center; gap:8px;
+      background:rgba(240,85,90,.1); color:#ff8e92; font-size:13px; font-weight:700;
+      padding:12px; border:1px solid rgba(240,85,90,.3); border-radius:11px;
+      cursor:pointer; transition:.15s; font-family:inherit; letter-spacing:.02em;
+    }
+    .kill:hover { background:var(--red); color:#fff; border-color:var(--red); }
+
+    /* ---------- Main ---------- */
+    main { flex:1; min-width:0; }
+    .topbar {
+      display:flex; align-items:baseline; gap:12px; padding:22px 34px 18px;
+    }
+    .topbar h1 { font-size:21px; font-weight:700; margin:0; letter-spacing:-.02em; }
+    .topbar .sub { color:var(--faint); font-size:13px; }
+    .content { padding:6px 34px 40px; max-width:1080px; }
+
+    .card {
+      background:linear-gradient(180deg,var(--card-hi),var(--card));
+      border:1px solid var(--line); border-radius:var(--radius);
+      padding:22px; margin-bottom:20px; box-shadow:var(--shadow);
+    }
+    .card h2 { font-size:11.5px; text-transform:uppercase; letter-spacing:.09em;
+               color:var(--faint); margin:0 0 16px; font-weight:700;
+               display:flex; align-items:center; gap:8px; }
+    .card h2::after { content:""; flex:1; height:1px;
+               background:linear-gradient(90deg,var(--line),transparent); }
+
+    label { display:block; font-size:12px; color:var(--muted); margin:12px 0 5px;
+            font-weight:500; }
+    input, select {
+      width:100%; padding:9px 11px; background:rgba(0,0,0,.25); color:var(--txt);
+      border:1px solid var(--line); border-radius:9px; font-size:13.5px;
+      font-family:inherit; transition:.15s;
+    }
+    input:focus, select:focus { outline:none; border-color:var(--green-dim);
+      box-shadow:0 0 0 3px rgba(47,204,64,.16); background:rgba(0,0,0,.35); }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+
+    button {
+      cursor:pointer; border:none; border-radius:9px; padding:10px 16px;
+      font-weight:600; font-size:13.5px; font-family:inherit; color:#06210b;
+      background:linear-gradient(135deg,var(--green-hi),var(--green));
+      box-shadow:0 1px 0 rgba(255,255,255,.15) inset, 0 6px 16px -8px var(--green);
+      transition:.15s; letter-spacing:-.01em;
+    }
+    button:hover { filter:brightness(1.07); transform:translateY(-1px); }
+    button.grn { color:#06210b; }
+    button.ghost { background:rgba(255,255,255,.04); color:var(--txt);
+                   border:1px solid var(--line-hi); box-shadow:none; }
+    button.ghost:hover { background:rgba(255,255,255,.08); }
+    .btnrow { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:left; padding:10px 10px; border-bottom:1px solid var(--line); }
+    tr:last-child td { border-bottom:none; }
+    th { color:var(--faint); font-weight:600; font-size:10.5px;
+         text-transform:uppercase; letter-spacing:.07em; }
+    tbody tr { transition:.12s; }
+    tbody tr:hover { background:rgba(255,255,255,.025); }
+    td b { font-weight:600; }
+
+    .badge { display:inline-flex; align-items:center; gap:6px; padding:4px 11px;
+             border-radius:30px; font-size:11.5px; font-weight:700;
+             letter-spacing:.02em; }
+    .badge::before { content:""; width:6px; height:6px; border-radius:50%;
+                     background:currentColor; }
+    .badge.on { background:rgba(47,204,64,.13); color:var(--green-hi); }
+    .badge.off { background:rgba(240,85,90,.13); color:#ff8e92; }
+    .badge.amber { background:rgba(230,169,58,.14); color:var(--amber); }
+
+    .pill { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12px;
+            background:rgba(0,0,0,.3); padding:8px 11px; border-radius:9px;
+            border:1px solid var(--line); color:#cfe0db; word-break:break-all; }
+    .mut { color:var(--muted); }
+    .switchrow { display:flex; gap:10px; align-items:stretch; margin-top:16px;
+                 flex-wrap:wrap; }
+    .switchrow label { flex:1; min-width:150px; display:flex; gap:9px;
+        align-items:center; margin:0; color:var(--txt); font-size:13px;
+        font-weight:500; padding:11px 13px; border:1px solid var(--line);
+        border-radius:10px; background:rgba(0,0,0,.18); cursor:pointer; transition:.15s; }
+    .switchrow label:hover { border-color:var(--line-hi); }
+    .switchrow input { width:auto; accent-color:var(--green); }
+
+    .tab { display:none; animation:fade .2s ease; }
+    .tab.active { display:block; }
+    @keyframes fade { from { opacity:0; transform:translateY(4px); } to { opacity:1; } }
+
+    @media (max-width:860px){
+      aside{ width:64px; flex-basis:64px; }
+      .brand img{ width:34px; object-fit:cover; object-position:left; }
+      .navitem span, .conn .lbl, .kill span{ display:none; }
+      .conn{ justify-content:center; } .content,.topbar{ padding-left:18px; padding-right:18px; }
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <div class="brand"><img src="{{ logo_uri }}" alt="AlgoFoundry"></div>
+    <div id="conn" class="conn"><span class="dot"></span><span class="lbl">Checking…</span></div>
+    <nav>
+      <button class="navitem active" data-tab="trading" onclick="showTab('trading')">
+        <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>
+        <span>Trading</span></button>
+      <button class="navitem" data-tab="events" onclick="showTab('events')">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span>Event Log</span></button>
+      <button class="navitem" data-tab="settings" onclick="showTab('settings')">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 7 2.6h.1A1.6 1.6 0 0 0 9 1.1V1a2 2 0 1 1 4 0v.1A1.6 1.6 0 0 0 15 2.6a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v.1a1.6 1.6 0 0 0 1.5 1H23a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+        <span>Settings</span></button>
+    </nav>
+    <div class="sidefoot">
+      <form method="post" action="/api/kill" style="margin:0"
+            onsubmit="return confirm('Engage kill switch? All new signals will be rejected.');">
+        <button class="kill" type="submit">&#9632; <span>KILL SWITCH</span></button>
+      </form>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <h1 id="tabTitle">Trading</h1>
+      <span class="sub" id="tabSub">Live positions &amp; manual execution</span>
+    </div>
+    <div class="content">
+
+      <!-- ============ TRADING TAB ============ -->
+      <section id="trading" class="tab active">
+        <div class="card">
+          <h2>Positions &amp; Open Orders</h2>
+          <div id="positions" hx-get="/api/positions" hx-trigger="load, every 5s">Loading…</div>
+        </div>
+        <div class="card">
+          <h2>Manual Execution</h2>
+          <form method="post" action="/api/manual">
+            <div class="row3">
+              <div><label>Symbol</label>
+                <input name="symbol" placeholder="AAPL" required></div>
+              <div><label>Side</label>
+                <select name="side">
+                  <option value="buy">Buy</option>
+                  <option value="sell">Sell</option>
+                  <option value="flatten">Flatten</option>
+                </select></div>
+              <div><label>Qty (0 = use sizing)</label>
+                <input name="qty" type="number" step="any" value="0"></div>
+            </div>
+            <div class="btnrow"><button type="submit">Execute order</button></div>
+            <p class="mut" style="font-size:12px;margin-bottom:0">Manual orders bypass the
+              buy-if-flat / sell-if-holding gating. Use with care.</p>
+          </form>
+        </div>
+      </section>
+
+      <!-- ============ EVENT LOG TAB ============ -->
+      <section id="events" class="tab">
+        <div class="card">
+          <h2>Event Log</h2>
+          <div id="eventlog" hx-get="/api/events" hx-trigger="load, every 4s">Loading…</div>
+        </div>
+      </section>
+
+      <!-- ============ SETTINGS TAB ============ -->
+      <section id="settings" class="tab">
+        <div class="card">
+          <h2>IBKR Connection</h2>
+          <div id="status" hx-get="/api/status" hx-trigger="load, every 5s">Loading…</div>
+        </div>
+
+        <div class="card">
+          <h2>Trading Configuration</h2>
+          <form method="post" action="/api/settings">
+            <div class="row3">
+              <div><label>IBKR host</label>
+                <input name="ibkr_host" value="{{ settings.ibkr_host }}"></div>
+              <div><label>Port (4002 paper / 4001 live)</label>
+                <input name="ibkr_port" type="number" value="{{ settings.ibkr_port }}"></div>
+              <div><label>Client ID</label>
+                <input name="ibkr_client_id" type="number" value="{{ settings.ibkr_client_id }}"></div>
+            </div>
+            <div class="row">
+              <div><label>Account (optional)</label>
+                <input name="ibkr_account" value="{{ settings.ibkr_account }}"></div>
+              <div><label>Mode label</label>
+                <select name="mode_label">
+                  <option value="paper" {{ 'selected' if settings.mode_label=='paper' }}>paper</option>
+                  <option value="live" {{ 'selected' if settings.mode_label=='live' }}>live</option>
+                </select></div>
+            </div>
+            <div class="row3">
+              <div><label>Sizing mode</label>
+                <select name="sizing_mode">
+                  <option value="fixed_shares" {{ 'selected' if settings.sizing_mode=='fixed_shares' }}>Fixed shares</option>
+                  <option value="fixed_dollars" {{ 'selected' if settings.sizing_mode=='fixed_dollars' }}>Fixed dollars</option>
+                  <option value="percent_equity" {{ 'selected' if settings.sizing_mode=='percent_equity' }}>% of equity</option>
+                </select></div>
+              <div><label>Sizing value</label>
+                <input name="sizing_value" type="number" step="any" value="{{ settings.sizing_value }}"></div>
+              <div><label>Max $ / position</label>
+                <input name="max_position_value" type="number" step="any" value="{{ settings.max_position_value }}"></div>
+            </div>
+            <div class="row3">
+              <div><label>Order type</label>
+                <select name="order_type">
+                  <option value="market" {{ 'selected' if settings.order_type=='market' }}>Market</option>
+                  <option value="limit" {{ 'selected' if settings.order_type=='limit' }}>Limit</option>
+                </select></div>
+              <div><label>Limit offset %</label>
+                <input name="limit_offset_pct" type="number" step="any" value="{{ settings.limit_offset_pct }}"></div>
+              <div><label>Max positions</label>
+                <input name="max_positions" type="number" value="{{ settings.max_positions }}"></div>
+            </div>
+            <div class="switchrow">
+              <label><input type="checkbox" name="trading_enabled" value="on"
+                {{ 'checked' if settings.trading_enabled }}> Trading enabled</label>
+              <label><input type="checkbox" name="allow_buy" value="on"
+                {{ 'checked' if settings.allow_buy }}> Allow buys</label>
+              <label><input type="checkbox" name="allow_sell" value="on"
+                {{ 'checked' if settings.allow_sell }}> Allow sells</label>
+            </div>
+            <div class="btnrow">
+              <button type="submit">Save settings</button>
+              <button class="grn" type="submit" formaction="/api/connect">Connect</button>
+              <button class="ghost" type="submit" formaction="/api/disconnect">Disconnect</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Webhook</h2>
+          <label>Endpoint (point your TradingView alert here)</label>
+          <div class="pill">POST&nbsp;&nbsp;https://YOUR-DOMAIN/webhook</div>
+          <label style="margin-top:16px">Shared secret (must match alert payload)</label>
+          <div class="pill">{{ settings.webhook_secret }}</div>
+          <form method="post" action="/api/regen-secret" style="margin-top:12px">
+            <button class="ghost" type="submit">Regenerate secret</button>
+          </form>
+          <label style="margin-top:16px">Alert message template</label>
+          <div class="pill" style="white-space:pre-wrap">{
+  "action": "buy",
+  "symbol": "{{ '{{ticker}}' }}",
+  "secret": "{{ settings.webhook_secret }}"
+}</div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script>
+    var TABS = {
+      trading:  ["Trading", "Live positions & manual execution"],
+      events:   ["Event Log", "Signals, orders & system events"],
+      settings: ["Settings", "Connection, sizing & webhook"]
+    };
+    function showTab(id) {
+      document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+      document.getElementById(id).classList.add('active');
+      document.querySelectorAll('.navitem').forEach(function(n){ n.classList.remove('active'); });
+      var btn = document.querySelector('.navitem[data-tab="' + id + '"]');
+      if (btn) btn.classList.add('active');
+      document.getElementById('tabTitle').textContent = TABS[id][0];
+      document.getElementById('tabSub').textContent = TABS[id][1];
+      try { localStorage.setItem('af_tab', id); } catch (e) {}
+    }
+    (function () {
+      var saved = 'trading';
+      try { saved = localStorage.getItem('af_tab') || 'trading'; } catch (e) {}
+      if (!TABS[saved]) saved = 'trading';
+      showTab(saved);
+    })();
+
+    // Global connection indicator (polls /health).
+    function refreshConn() {
+      fetch('/health').then(function(r){ return r.json(); }).then(function(d){
+        var el = document.getElementById('conn');
+        var lbl = el.querySelector('.lbl');
+        if (d.connected) { el.className = 'conn up'; lbl.textContent = 'IBKR connected'; }
+        else { el.className = 'conn down'; lbl.textContent = 'IBKR disconnected'; }
+      }).catch(function(){
+        var el = document.getElementById('conn');
+        el.className = 'conn down'; el.querySelector('.lbl').textContent = 'Bridge offline';
+      });
+    }
+    refreshConn(); setInterval(refreshConn, 5000);
+  </script>
+</body>
+</html>
