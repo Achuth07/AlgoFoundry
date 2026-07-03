@@ -1,7 +1,8 @@
 <table>
   <tr><th>Time</th><th>Kind</th><th>Action</th><th>Symbol</th><th>Status</th><th>Detail</th></tr>
   {% for e in events %}
-  <tr>
+  {% set src = 'longterm' if (e.action and (e.action.startswith('lt_') or e.action.startswith('t212') or e.action == 'notifier')) else 'algo' %}
+  <tr data-source="{{ src }}">
     <td class="mono mut">{{ e.ts | datetimeformat }}</td>
     <td>{{ e.kind }}</td>
     <td>{{ e.action or '' }}</td>
