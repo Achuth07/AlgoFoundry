@@ -601,7 +601,7 @@
               </div>
               <div class="row">
                 <div><label>AI provider</label>
-                  <select name="lt_ai_provider" id="lt_ai_provider" onchange="toggleProviderKeys()">
+                  <select name="lt_ai_provider" id="lt_ai_provider" onchange="updateProviderUI()">
                     <option value="openrouter" {{ 'selected' if settings.lt_ai_provider=='openrouter' }}>OpenRouter</option>
                     <option value="groq" {{ 'selected' if settings.lt_ai_provider=='groq' }}>Groq</option>
                     <option value="gemini" {{ 'selected' if settings.lt_ai_provider=='gemini' }}>Gemini (Google AI Studio)</option>
@@ -613,11 +613,13 @@
               </div>
               <div class="row">
                 <div><label>AI model (primary)</label>
-                  <input name="lt_openrouter_model" value="{{ settings.lt_openrouter_model }}"
-                         placeholder="leave blank for provider default"></div>
+                  <select name="lt_openrouter_model" id="lt_model_primary">
+                    <option value="">(provider default)</option>
+                  </select></div>
                 <div><label>AI model (fallback)</label>
-                  <input name="lt_openrouter_fallback" value="{{ settings.lt_openrouter_fallback }}"
-                         placeholder="leave blank for provider default"></div>
+                  <select name="lt_openrouter_fallback" id="lt_model_fallback">
+                    <option value="">(provider default)</option>
+                  </select></div>
               </div>
               <div class="row">
                 <div><label>CallMeBot phone</label>
@@ -751,12 +753,37 @@
     }
     refreshConn(); setInterval(refreshConn, 5000);
 
-    function toggleProviderKeys() {
+    var _providerModels = {{ provider_models | default({}) | tojson }};
+    var _savedPrimary = {{ settings.lt_openrouter_model | default('', true) | tojson }};
+    var _savedFallback = {{ settings.lt_openrouter_fallback | default('', true) | tojson }};
+
+    function updateProviderUI() {
       var p = document.getElementById('lt_ai_provider').value;
       document.getElementById('key_groq').style.display = (p === 'groq') ? '' : 'none';
       document.getElementById('key_gemini').style.display = (p === 'gemini') ? '' : 'none';
+
+      var models = _providerModels[p] || [];
+      ['lt_model_primary', 'lt_model_fallback'].forEach(function(selId) {
+        var sel = document.getElementById(selId);
+        var saved = (selId === 'lt_model_primary') ? _savedPrimary : _savedFallback;
+        sel.innerHTML = '<option value="">(provider default)</option>';
+        var foundSaved = false;
+        models.forEach(function(m) {
+          var opt = document.createElement('option');
+          opt.value = m[0]; opt.textContent = m[1];
+          if (m[0] === saved) { opt.selected = true; foundSaved = true; }
+          sel.appendChild(opt);
+        });
+        // If saved value isn't in the list (e.g. custom or from another provider), add it
+        if (saved && !foundSaved) {
+          var opt = document.createElement('option');
+          opt.value = saved; opt.textContent = saved + ' (custom)';
+          opt.selected = true;
+          sel.appendChild(opt);
+        }
+      });
     }
-    toggleProviderKeys();
+    updateProviderUI();
   </script>
 </body>
 </html>

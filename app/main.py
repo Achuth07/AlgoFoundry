@@ -16,10 +16,24 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import os
+import pathlib
 import secrets
 import threading
 import time
 from typing import Annotated
+
+# Auto-load .env file if present (no python-dotenv dependency needed).
+_env_file = pathlib.Path(__file__).resolve().parent.parent / ".env"
+if _env_file.is_file():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _k, _, _v = _line.partition("=")
+        _k = _k.strip()
+        _v = _v.strip().strip("'\"")
+        if _k and _k not in os.environ:   # don't override explicit exports
+            os.environ[_k] = _v
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import (
@@ -147,9 +161,14 @@ async def webhook(request: Request) -> JSONResponse:
 # ---- dashboard -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, _: str = Depends(require_login)) -> HTMLResponse:
+    from .longterm.ai_research import get_provider_models
     return templates.TemplateResponse(
         request, "index.html",
-        {"settings": db.get_all_settings(), "logo_uri": _logo_data_uri()},
+        {
+            "settings": db.get_all_settings(),
+            "logo_uri": _logo_data_uri(),
+            "provider_models": get_provider_models(),
+        },
     )
 
 

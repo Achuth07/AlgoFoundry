@@ -61,30 +61,61 @@ _PROVIDERS: dict[str, dict] = {
         "db_key": "lt_openrouter_api_key",
         "env_key": "OPENROUTER_API",
         "default_primary": "openrouter/free",
-        "default_fallback": "nvidia/nemotron-nano-9b-v2:free",
+        "default_fallback": "deepseek/deepseek-r1-distill:free",
         "extra_headers": {
             "HTTP-Referer": "https://github.com/algofoundry",
             "X-Title": "AlgoFoundry",
         },
+        "models": [
+            ("openrouter/free", "Auto-route (free)"),
+            ("deepseek/deepseek-r1-distill:free", "DeepSeek R1 Distill (free)"),
+            ("openai/gpt-oss-20b:free", "GPT-OSS 20B (free)"),
+            ("openai/gpt-oss-120b:free", "GPT-OSS 120B (free)"),
+            ("qwen/qwen3-coder-480b:free", "Qwen3 Coder 480B (free)"),
+            ("google/gemma-4-31b-it:free", "Gemma 4 31B (free)"),
+            ("nvidia/nemotron-nano-9b-v2:free", "Nemotron Nano 9B (free)"),
+            ("mistralai/mistral-small-3.2-24b-instruct:free", "Mistral Small 3.2 (free)"),
+        ],
     },
     "groq": {
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "db_key": "lt_groq_api_key",
         "env_key": "GROQ_API",
-        "default_primary": "llama-3.3-70b-versatile",
-        "default_fallback": "llama-3.1-8b-instant",
+        "default_primary": "openai/gpt-oss-120b",
+        "default_fallback": "qwen/qwen3-32b",
         "extra_headers": {},
+        "models": [
+            ("openai/gpt-oss-120b", "GPT-OSS 120B"),
+            ("qwen/qwen3-32b", "Qwen3 32B"),
+            ("qwen/qwen3.6-27b", "Qwen 3.6 27B"),
+            ("openai/gpt-oss-20b", "GPT-OSS 20B"),
+            ("meta-llama/llama-4-scout-17b-16e-instruct", "Llama 4 Scout"),
+            ("deepseek/deepseek-r1-distill-llama-70b", "DeepSeek R1 Distill 70B"),
+            ("groq/compound-mini", "Compound Mini (Groq)"),
+        ],
     },
     "gemini": {
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         "db_key": "lt_gemini_api_key",
         "env_key": "GEMINI_API",
-        "default_primary": "gemini-2.0-flash",
-        "default_fallback": "",
+        "default_primary": "gemini-2.5-flash",
+        "default_fallback": "gemini-3.5-flash",
         "auth_style": "x-goog",  # uses X-goog-api-key instead of Bearer
         "extra_headers": {},
+        "models": [
+            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("gemini-3.5-flash", "Gemini 3.5 Flash"),
+            ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
+            ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
+            ("gemini-2.5-pro", "Gemini 2.5 Pro (50 RPD)"),
+        ],
     },
 }
+
+
+def get_provider_models() -> dict[str, list[tuple[str, str]]]:
+    """Return {provider_name: [(model_id, display_label), ...]} for the UI."""
+    return {name: cfg["models"] for name, cfg in _PROVIDERS.items()}
 
 
 def _active_provider() -> str:
