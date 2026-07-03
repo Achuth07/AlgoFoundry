@@ -40,6 +40,44 @@
   <div class="mut" style="max-width:520px;margin-top:10px;font-size:12.5px">{{ verdict.rationale }}</div>
   {% endif %}
 
+  {# ---- AI key facts + review reason ---- #}
+  {% if ai_meta and ai_meta.key_facts %}
+  <div style="margin-top:12px">
+    <div style="font-size:12px;font-weight:600;color:var(--fg);margin-bottom:4px">
+      AI Key Facts
+      {% if ai_meta.materiality %}
+        <span class="badge off" style="font-size:10px;margin-left:6px;vertical-align:middle">{{ ai_meta.materiality }}</span>
+      {% endif %}
+    </div>
+    <ul style="margin:0;padding-left:18px;font-size:12px;color:var(--muted);list-style:disc">
+      {% for fact in ai_meta.key_facts %}
+        <li style="margin-bottom:2px">{{ fact }}</li>
+      {% endfor %}
+    </ul>
+    {% if ai_meta.override_candidate and ai_meta.override_reason %}
+    <div style="margin-top:6px;font-size:11px;padding:4px 8px;border-radius:6px;background:rgba(220,120,60,.10);color:#c46030">
+      ⚠ Review reason: {{ ai_meta.override_reason }}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ---- Recent headlines ---- #}
+  {% if headlines %}
+  <div style="margin-top:12px">
+    <div style="font-size:12px;font-weight:600;color:var(--fg);margin-bottom:4px">Recent News</div>
+    <ul style="margin:0;padding-left:18px;font-size:12px;color:var(--muted);list-style:disc">
+      {% for h in headlines %}
+        <li style="margin-bottom:3px">
+          {% if h.url %}<a href="{{ h.url }}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">{{ h.headline or '(untitled)' }}</a>
+          {% else %}{{ h.headline or '(untitled)' }}{% endif %}
+          {% if h.source %}<span style="font-size:10px;opacity:.6"> — {{ h.source }}</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
   <div class="mut" style="font-size:11px;margin-top:12px;font-style:italic">
     {% if saved %}saved (adhoc){% else %}not saved to history{% endif %}
   </div>

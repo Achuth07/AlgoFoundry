@@ -182,6 +182,18 @@ def analyze_symbol(
     # unknown keys).
     verdict["legs"] = legs
 
+    # Expose raw headlines + AI metadata for the UI news section.
+    verdict["_headlines"] = headlines  # list of {headline, source, datetime, url}
+    if ai_result is not None and ai_result.status == "ok":
+        verdict["_ai_meta"] = {
+            "key_facts": ai_result.key_facts or [],
+            "materiality": ai_result.materiality,
+            "override_candidate": ai_result.override_candidate,
+            "override_reason": ai_result.detail or "",
+        }
+    else:
+        verdict["_ai_meta"] = None
+
     if persist:
         db.upsert_verdict(date=run_date or _today(), **verdict)
     return verdict

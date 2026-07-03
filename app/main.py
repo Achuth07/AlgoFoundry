@@ -442,6 +442,11 @@ def longterm_analyze(
             status = "ok" if score is not None else "no_data"
         leg_chips.append({"name": name, "status": status, "score": score})
 
+    # Prepare news headlines for the UI (top 10, newest first).
+    raw_headlines = verdict.get("_headlines") or []
+    top_headlines = raw_headlines[:10]
+    ai_meta = verdict.get("_ai_meta")
+
     return templates.TemplateResponse(
         request, "_longterm_analysis.html",
         {
@@ -449,6 +454,8 @@ def longterm_analyze(
             "verdict": verdict,
             "leg_chips": leg_chips,
             "saved": do_save,
+            "headlines": top_headlines,
+            "ai_meta": ai_meta,
         },
     )
 
