@@ -7,8 +7,10 @@ Three concerns live here:
   imported by the other leg modules.
 * Price history (ALG-2) — :func:`fetch_ohlcv` pulls OHLCV bars from yfinance
   with retry/backoff and a same-day on-disk cache so reruns are network-free.
+  Alpha Vantage (TIME_SERIES_DAILY) is used as a fallback when yfinance fails.
 * Analyst + news + earnings (ALG-3) — thin Finnhub free-tier wrappers behind a
   single mockable ``_finnhub_get`` HTTP seam, plus their scoring rubric.
+  Alpha Vantage NEWS_SENTIMENT is used as a fallback when Finnhub is unavailable.
 
 Design principle: a leg never fabricates a neutral ``0`` on failure. The
 ``status`` field always says *why* a score is or isn't present:
@@ -46,6 +48,66 @@ try:  # pragma: no cover - import guard
     import requests
 except Exception:  # pragma: no cover
     requests = None  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Alpha Vantage shared helpers
+# ---------------------------------------------------------------------------
+_AV_BASE = "https://www.alphavantage.co/query"
+
+
+def _get_av_key() -> str:
+    """Resolve the Alpha Vantage API key (never logged).
+
+    Preference: ``lt_alpha_vantage_key`` setting, then ``ALPHA_VANTAGE_API``
+    environment variable.
+    """
+    try:
+        setting_key = db.get_setting("lt_alpha_vantage_key", "") or ""
+    except Exception:
+        setting_key = ""
+    if setting_key:
+        return str(setting_key)
+    return os.environ.get("ALPHA_VANTAGE_API", "") or ""
+
+
+def _av_get(params: dict[str, Any]) -> Any:
+    """Single mockable HTTP seam for all Alpha Vantage calls.
+
+    Injects the API key and returns parsed JSON, or ``None`` on any error.
+    """
+    token = _get_av_key()
+    if not token:
+        return None
+    if requests is None:  # pragma: no cover
+        return None
+
+    q = dict(params)
+    q["apikey"] = token
+    try:
+        resp = requests.get(_AV_BASE, params=q, timeout=15)
+        if resp.status_code != 200:
+            db.log_event(
+                "info", status="no_data",
+                detail=f"alpha_vantage {params.get('function', '?')} -> HTTP {resp.status_code}",
+            )
+            return None
+        data = resp.json()
+        # AV returns error messages inside the JSON body.
+        if "Error Message" in data or "Note" in data:
+            msg = data.get("Error Message") or data.get("Note", "")
+            db.log_event(
+                "info", status="no_data",
+                detail=f"alpha_vantage {params.get('function', '?')}: {msg[:200]}",
+            )
+            return None
+        return data
+    except Exception as exc:
+        db.log_event(
+            "info", status="no_data",
+            detail=f"alpha_vantage {params.get('function', '?')} error: {exc}",
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +171,71 @@ def _download_ohlcv(yf_symbol: str, period: str):
     return df
 
 
+def _download_ohlcv_av(symbol: str, period: str):
+    """Alpha Vantage TIME_SERIES_DAILY fallback for OHLCV data.
+
+    Maps the yfinance ``period`` string to AV's ``outputsize`` parameter:
+    ``'compact'`` (100 days) for short periods, ``'full'`` (~20 years) for 1y+.
+    Returns a pandas DataFrame matching yfinance's column convention, or None.
+    """
+    if pd is None:  # pragma: no cover
+        return None
+
+    # AV symbols are plain US tickers; strip yfinance suffixes like .L
+    av_symbol = symbol.split(".")[0] if "." in symbol else symbol
+
+    outputsize = "full" if period in ("1y", "2y", "5y", "10y", "max") else "compact"
+    data = _av_get({
+        "function": "TIME_SERIES_DAILY",
+        "symbol": av_symbol,
+        "outputsize": outputsize,
+    })
+    if not data:
+        return None
+
+    ts = data.get("Time Series (Daily)")
+    if not ts:
+        return None
+
+    rows = []
+    for date_str, bar in ts.items():
+        try:
+            rows.append({
+                "Date": _dt.datetime.strptime(date_str, "%Y-%m-%d"),
+                "Open": float(bar["1. open"]),
+                "High": float(bar["2. high"]),
+                "Low": float(bar["3. low"]),
+                "Close": float(bar["4. close"]),
+                "Volume": int(bar["5. volume"]),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows).set_index("Date").sort_index()
+
+    # Trim to match the requested period.
+    _PERIOD_DAYS = {
+        "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730,
+        "5y": 1825, "10y": 3650, "max": 99999,
+    }
+    days = _PERIOD_DAYS.get(period, 365)
+    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
+    df = df[df.index >= cutoff]
+
+    return df if not df.empty else None
+
+
 def fetch_ohlcv(yf_symbol: str, period: str = "1y", *, retries: int = 3):
     """Fetch OHLCV bars for ``yf_symbol`` as a pandas DataFrame, or ``None``.
 
     * A same-day on-disk cache in ``.cache/longterm/`` keyed on symbol+period+
       date means repeated runs on the same day never hit the network.
     * Network fetches retry up to ``retries`` times with exponential backoff.
+    * If yfinance fails entirely, Alpha Vantage TIME_SERIES_DAILY is tried as
+      a fallback (single attempt, no retry).
 
     Returns ``None`` if every attempt fails or the result is empty.
     """
@@ -140,11 +261,24 @@ def fetch_ohlcv(yf_symbol: str, period: str = "1y", *, retries: int = 3):
         if attempt < retries - 1:
             time.sleep(0.5 * (2 ** attempt))  # 0.5s, 1s, ...
 
+    # ---- Alpha Vantage fallback -------------------------------------------
+    try:
+        df = _download_ohlcv_av(yf_symbol, period)
+        if df is not None and not df.empty:
+            _write_cache(path, df)
+            db.log_event(
+                "info", symbol=yf_symbol, status="ok",
+                detail="fetch_ohlcv: yfinance failed, Alpha Vantage succeeded",
+            )
+            return df
+    except Exception as exc:
+        last_err = exc
+
     db.log_event(
         "info",
         symbol=yf_symbol,
         status="no_data",
-        detail=f"fetch_ohlcv failed after {retries} tries: {last_err}",
+        detail=f"fetch_ohlcv failed (yfinance + AV): {last_err}",
     )
     return None
 
@@ -175,7 +309,7 @@ def _finnhub_get(path: str, params: dict[str, Any] | None = None) -> Any:
     Returns parsed JSON, or ``None`` on any error / missing key. The API token
     is injected here and is NEVER logged.
     """
-    token = db.get_setting("lt_finnhub_key", "") or ""
+    token = db.get_setting("lt_finnhub_key", "") or os.environ.get("FINNHUB_API", "") or ""
     if not token:
         return None
     if requests is None:  # pragma: no cover
@@ -313,6 +447,39 @@ def analyst_score(
 
 
 # ---- News leg -------------------------------------------------------------
+def _fetch_news_av(symbol: str, since: _dt.datetime) -> list[dict] | None:
+    """Alpha Vantage NEWS_SENTIMENT fallback for company news.
+
+    Returns a list of headline dicts matching the Finnhub shape, or None.
+    """
+    # AV expects tickers like AAPL, no exchange suffix.
+    av_symbol = symbol.split(".")[0] if "." in symbol else symbol
+    time_from = since.strftime("%Y%m%dT%H%M")
+
+    data = _av_get({
+        "function": "NEWS_SENTIMENT",
+        "tickers": av_symbol,
+        "time_from": time_from,
+        "limit": "50",
+    })
+    if not data:
+        return None
+
+    feed = data.get("feed")
+    if not feed:
+        return None
+
+    headlines = []
+    for item in feed:
+        headlines.append({
+            "headline": item.get("title"),
+            "source": item.get("source"),
+            "datetime": item.get("time_published"),
+            "url": item.get("url"),
+        })
+    return headlines
+
+
 def fetch_news(
     finnhub_symbol: str | None,
     *,
@@ -320,6 +487,8 @@ def fetch_news(
     since_ts: float | None = None,
 ) -> LegResult:
     """Fetch recent company news headlines from Finnhub ``/company-news``.
+
+    Falls back to Alpha Vantage NEWS_SENTIMENT when Finnhub is unavailable.
 
     ``since_ts`` is a unix timestamp of the previous successful run; defaults
     to 72h back. On success the ``summary`` carries a list of raw headline
@@ -338,6 +507,7 @@ def fetch_news(
     else:
         start = _dt.datetime.fromtimestamp(since_ts, tz=_dt.timezone.utc)
 
+    # ---- Primary: Finnhub -------------------------------------------------
     data = _finnhub_get(
         "/company-news",
         {
@@ -346,24 +516,38 @@ def fetch_news(
             "to": now.date().isoformat(),
         },
     )
-    if data is None:
-        return LegResult(status="no_data", detail="company-news request failed")
 
-    headlines = []
-    for item in data or []:
-        headlines.append(
-            {
-                "headline": item.get("headline"),
-                "source": item.get("source"),
-                "datetime": item.get("datetime"),
-                "url": item.get("url"),
-            }
+    if data is not None:
+        headlines = []
+        for item in data or []:
+            headlines.append(
+                {
+                    "headline": item.get("headline"),
+                    "source": item.get("source"),
+                    "datetime": item.get("datetime"),
+                    "url": item.get("url"),
+                }
+            )
+        return LegResult(
+            status="ok",
+            summary={"count": len(headlines), "headlines": headlines},
+            detail=f"{len(headlines)} headlines since {start.date().isoformat()}",
         )
-    return LegResult(
-        status="ok",
-        summary={"count": len(headlines), "headlines": headlines},
-        detail=f"{len(headlines)} headlines since {start.date().isoformat()}",
-    )
+
+    # ---- Fallback: Alpha Vantage ------------------------------------------
+    av_headlines = _fetch_news_av(finnhub_symbol, start)
+    if av_headlines is not None:
+        db.log_event(
+            "info", symbol=finnhub_symbol, status="ok",
+            detail="fetch_news: Finnhub failed, Alpha Vantage succeeded",
+        )
+        return LegResult(
+            status="ok",
+            summary={"count": len(av_headlines), "headlines": av_headlines},
+            detail=f"{len(av_headlines)} headlines from Alpha Vantage since {start.date().isoformat()}",
+        )
+
+    return LegResult(status="no_data", detail="company-news failed (Finnhub + AV)")
 
 
 # ---- Earnings calendar ----------------------------------------------------

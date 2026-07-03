@@ -41,6 +41,7 @@ DEFAULTS: dict[str, Any] = {
     "lt_t212_api_key": "",
     "lt_t212_env": "demo",            # demo | live
     "lt_finnhub_key": "",
+    "lt_alpha_vantage_key": "",
     "lt_callmebot_phone": "",
     "lt_callmebot_key": "",
     "lt_openrouter_model": "",

@@ -67,6 +67,50 @@ def _fetch_from_yf(yf_symbol: str) -> dict[str, Any] | None:
     return _extract_metrics(info)
 
 
+def _fetch_from_av(symbol: str) -> dict[str, Any] | None:
+    """Alpha Vantage OVERVIEW fallback for fundamentals.
+
+    Maps AV field names to the same keys as ``_extract_metrics`` so the scoring
+    rubric works identically regardless of source.
+    """
+    from .data_sources import _av_get
+
+    av_symbol = symbol.split(".")[0] if "." in symbol else symbol
+    data = _av_get({"function": "OVERVIEW", "symbol": av_symbol})
+    if not data or "Symbol" not in data:
+        return None
+
+    def _safe_float(key: str) -> Any:
+        v = data.get(key)
+        if v is None or v == "None" or v == "-":
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    # AV reports D/E as a ratio (e.g. 1.5), but yfinance reports as a
+    # percentage (e.g. 150). Convert to match yfinance convention.
+    de = _safe_float("DebtEquityRatio")
+    if de is not None:
+        de = de * 100.0  # AV ratio -> yfinance percentage
+
+    return {
+        "trailing_pe": _safe_float("TrailingPE"),
+        "forward_pe": _safe_float("ForwardPE"),
+        "revenue_growth": _safe_float("QuarterlyRevenueGrowthYOY"),
+        "earnings_growth": _safe_float("QuarterlyEarningsGrowthYOY"),
+        "profit_margin": _safe_float("ProfitMargin"),
+        "operating_margin": _safe_float("OperatingMarginTTM"),
+        "debt_to_equity": de,
+        "free_cash_flow": None,  # AV OVERVIEW doesn't carry FCF
+        "recommendation_key": None,
+        "recommendation_mean": _safe_float("AnalystTargetPrice"),
+        "market_cap": _safe_float("MarketCapitalization"),
+        "sector": data.get("Sector"),
+    }
+
+
 def fetch_fundamentals(
     yf_symbol: str, *, force_refresh: bool = False
 ) -> dict[str, Any] | None:
@@ -74,8 +118,9 @@ def fetch_fundamentals(
 
     Read-through cache: a fresh (<7d) cached payload is returned without a
     network call. On a cache miss/staleness the live fetch is attempted and its
-    result written back. If the live fetch fails but a *stale* cache exists, the
-    stale payload is returned (better than nothing for the AI step).
+    result written back. If the live fetch fails, Alpha Vantage OVERVIEW is
+    tried as a fallback. If both fail but a *stale* cache exists, the stale
+    payload is returned (better than nothing for the AI step).
     """
     if not yf_symbol:
         return None
@@ -86,12 +131,13 @@ def fetch_fundamentals(
         if age < _CACHE_TTL_SECONDS:
             return cached["payload"]
 
+    # ---- Primary: yfinance ------------------------------------------------
     try:
         metrics = _fetch_from_yf(yf_symbol)
     except Exception as exc:
         db.log_event(
             "info", symbol=yf_symbol, status="no_data",
-            detail=f"fetch_fundamentals error: {exc}",
+            detail=f"fetch_fundamentals yfinance error: {exc}",
         )
         metrics = None
 
@@ -99,7 +145,25 @@ def fetch_fundamentals(
         db.set_fundamentals_cache(yf_symbol, metrics)
         return metrics
 
-    # Live fetch failed — fall back to a stale cache if present.
+    # ---- Fallback: Alpha Vantage ------------------------------------------
+    try:
+        metrics = _fetch_from_av(yf_symbol)
+    except Exception as exc:
+        db.log_event(
+            "info", symbol=yf_symbol, status="no_data",
+            detail=f"fetch_fundamentals AV error: {exc}",
+        )
+        metrics = None
+
+    if metrics:
+        db.log_event(
+            "info", symbol=yf_symbol, status="ok",
+            detail="fetch_fundamentals: yfinance failed, Alpha Vantage succeeded",
+        )
+        db.set_fundamentals_cache(yf_symbol, metrics)
+        return metrics
+
+    # Both failed — fall back to a stale cache if present.
     if cached and cached.get("payload"):
         return cached["payload"]
     return None
