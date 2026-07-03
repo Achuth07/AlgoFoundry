@@ -1,0 +1,156 @@
+//@version=5
+// ============================================================================
+// AlgoFoundry — Strategy v2  (entry + exit, single alert)
+// Long-only swing strategy for the 4-hour timeframe.
+// ============================================================================
+//
+// Same core as v1 (alternating BUY -> EXIT -> BUY ...) plus optional, fully
+// toggleable improvements. With every toggle OFF it behaves exactly like v1.
+//
+// What's new vs v1
+//   1. STOP-LOSS exit (optional, ON by default) — v1's only exit was the
+//      take-profit, so a long could be held through an unlimited drawdown.
+//      v2 adds a protective stop as a second exit path (ATR multiple, percent,
+//      or "trail down-flip"). Any exit (take-profit OR stop) still resets the
+//      cycle, so alternation is preserved.
+//   2. OPTIONAL ENTRY FILTERS (default OFF, so entries stay unfiltered):
+//        • Trend filter — only buy when price is above a long EMA.
+//        • Volume confirmation — only buy on an above-average up-volume bar.
+//   3. RE-ENTRY COOLDOWN (optional) — minimum bars after an exit before a new
+//      buy, to damp whipsaw.
+//   4. RICHER WEBHOOK PAYLOAD — adds "price" and "reason"
+//      (atr_entry / take_profit / stop_loss). Extra fields are ignored by the
+//      bridge, so it stays drop-in compatible with v1.
+//   5. CLEARER VISUALS — entry price line, live stop line, and an in-position
+//      background tint.
+//
+// Unchanged guarantees: no repaint (confirmed bar close only), one buy per flip,
+// strict alternation, and a single "Any alert() function call" alert.
+// ============================================================================
+indicator("AlgoFoundry Strategy v2 — ATR entry + TP/Stop", overlay=true)
+
+// ============================== INPUTS ======================================
+grpE = "Entry — ATR trailing stop"
+atrPeriod     = input.int(20, "ATR Period", group=grpE, tooltip="Lower = more sensitive")
+atrMultiplier = input.float(4.0, "ATR Multiplier", minval=0.5, maxval=1000, step=0.1, group=grpE, tooltip="Main aggression dial. Lower = earlier entries.")
+
+grpF = "Entry filters (optional — OFF = unfiltered, like v1)"
+useTrend  = input.bool(false, "Require uptrend (price > EMA)", group=grpF)
+trendLen  = input.int(200, "Trend EMA length", minval=1, group=grpF)
+useVol    = input.bool(false, "Require volume confirmation", group=grpF)
+volLen    = input.int(20, "Volume SMA length", minval=1, group=grpF)
+volMult   = input.float(1.5, "Volume multiplier", minval=0.1, step=0.1, group=grpF)
+
+grpX = "Exit — take profit"
+rsi_len       = input.int(14, "RSI Length", group=grpX)
+rsi_ob        = input.int(70, "RSI Overbought Level", group=grpX)
+requireBear   = input.bool(true, "Require strong bearish candle", group=grpX, tooltip="If off, take-profit fires on the RSI cross-under alone.")
+
+grpS = "Exit — stop loss (optional)"
+useStop  = input.bool(true, "Enable stop-loss exit", group=grpS, tooltip="Turn OFF for pure v1 behaviour (take-profit only).")
+stopType = input.string("ATR multiple", "Stop type", options=["ATR multiple", "Percent", "Trail down-flip"], group=grpS)
+stopATR  = input.float(3.0, "Stop = entry - N×ATR", minval=0.1, step=0.1, group=grpS)
+stopPct  = input.float(8.0, "Stop percent below entry", minval=0.1, step=0.1, group=grpS)
+
+grpR = "Risk"
+cooldownBars = input.int(0, "Re-entry cooldown (bars)", minval=0, group=grpR, tooltip="Minimum bars after an exit before a new buy. 0 = off.")
+
+grpW = "Webhook"
+webhookSecret = input.string("PASTE_YOUR_SECRET_HERE", "Webhook secret", group=grpW, tooltip="Must match the secret shown in the AlgoFoundry dashboard.")
+sendPrice     = input.bool(true, "Include price in payload", group=grpW)
+
+// ============================ INDICATORS ====================================
+atr   = ta.atr(atrPeriod)
+nLoss = atrMultiplier * atr
+rsi   = ta.rsi(close, rsi_len)
+
+// ---- ATR trailing stop ----
+var float xATRTrailingStop = na
+xATRTrailingStop := if (close > nz(xATRTrailingStop[1], 0) and close[1] > nz(xATRTrailingStop[1], 0))
+    math.max(nz(xATRTrailingStop[1]), close - nLoss)
+else if (close < nz(xATRTrailingStop[1], 0) and close[1] < nz(xATRTrailingStop[1], 0))
+    math.min(nz(xATRTrailingStop[1]), close + nLoss)
+else if (close > nz(xATRTrailingStop[1], 0))
+    close - nLoss
+else
+    close + nLoss
+
+var int pos = 0
+pos := if (close[1] < nz(xATRTrailingStop[1], 0) and close > nz(xATRTrailingStop[1], 0))
+    1
+else if (close[1] > nz(xATRTrailingStop[1], 0) and close < nz(xATRTrailingStop[1], 0))
+    -1
+else
+    nz(pos[1], 0)
+
+// ============================ CONDITIONS ====================================
+// Raw entry: ATR trail flips long.
+rawBuy = pos == 1 and pos[1] != 1
+
+// Optional entry filters.
+trendOK = not useTrend or close > ta.ema(close, trendLen)
+volOK   = not useVol   or (volume > ta.sma(volume, volLen) * volMult and close > open)
+
+// Take-profit: strong bearish close after RSI crosses back down through OB.
+strongBearishCandle = close < open and close < low[1]
+rsiTP = ta.crossunder(rsi, rsi_ob) and (not requireBear or strongBearishCandle)
+
+// Trail down-flip (used by the "Trail down-flip" stop type).
+trailDownFlip = pos == -1 and pos[1] != -1
+
+// ====================== STATE MACHINE (alternating) =========================
+var bool  inPos      = false
+var float entryPrice = na
+var float stopLevel  = na
+var int   lastExitBar = na
+
+cooldownOK = na(lastExitBar) or (bar_index - lastExitBar) >= cooldownBars
+entryCond  = rawBuy and trendOK and volOK and cooldownOK
+
+// Stop hit test (only meaningful while in a position).
+stopHit = useStop and (
+     (stopType == "Trail down-flip" and trailDownFlip) or
+     (not na(stopLevel) and close < stopLevel))
+
+// Resolve signals from the committed (pre-update) state.
+sellByTP   = inPos and rsiTP
+sellByStop = inPos and stopHit and not sellByTP
+sellSignal = sellByTP or sellByStop
+buySignal  = entryCond and not inPos     // mutually exclusive with the sells
+
+// State updates (commit at bar close via `var`).
+if sellSignal
+    inPos      := false
+    entryPrice := na
+    stopLevel  := na
+    lastExitBar := bar_index
+if buySignal
+    inPos      := true
+    entryPrice := close
+    stopLevel  := stopType == "Percent" ? close * (1 - stopPct / 100) : (stopType == "ATR multiple" ? close - stopATR * atr : na)
+
+// ============================== VISUALS =====================================
+stopColor = pos == 1 ? color.new(color.green, 0) : color.new(color.red, 0)
+plot(xATRTrailingStop, color=stopColor, linewidth=2, title="ATR Trailing Stop")
+plot(inPos ? entryPrice : na, color=color.new(color.gray, 0), style=plot.style_linebr, title="Entry price")
+plot(inPos and not na(stopLevel) ? stopLevel : na, color=color.new(color.red, 0), style=plot.style_linebr, title="Stop level")
+bgcolor(inPos ? color.new(color.green, 92) : na, title="In position")
+
+plotshape(buySignal,   title="Buy Signal",         style=shape.labelup,      location=location.belowbar, text="Buy", textcolor=color.white, color=color.new(color.green, 0))
+plotshape(sellByTP,    title="Take Profit Signal", style=shape.triangledown, location=location.abovebar, text="TP",  textcolor=color.white, color=color.new(color.purple, 0))
+plotshape(sellByStop,  title="Stop-Loss Signal",   style=shape.xcross,       location=location.abovebar, text="SL",  textcolor=color.white, color=color.new(color.orange, 0))
+
+// ============================== ALERTS ======================================
+// One "Any alert() function call" alert handles all three messages.
+// priceFrag is a fully self-contained ',"price":"..."' chunk (or empty),
+// so the JSON stays valid whether or not price is included.
+priceFrag = sendPrice ? ',"price":"' + str.tostring(close) + '"' : ''
+
+if buySignal and barstate.isconfirmed
+    alert('{"action":"buy","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"atr_entry"}', alert.freq_once_per_bar_close)
+
+if sellByTP and barstate.isconfirmed
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"take_profit"}', alert.freq_once_per_bar_close)
+
+if sellByStop and barstate.isconfirmed
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"stop_loss"}', alert.freq_once_per_bar_close)

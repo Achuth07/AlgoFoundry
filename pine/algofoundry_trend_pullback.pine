@@ -1,0 +1,164 @@
+//@version=5
+// ============================================================================
+// AlgoFoundry — Trend-Pullback Momentum strategy
+// Long-only swing trading · 4-hour timeframe · US equities
+// ============================================================================
+//
+// A fresh, research-based strategy (distinct from the ATR-flip v1/v2). It trades
+// the most widely documented swing edge: buying pullbacks inside an established
+// uptrend, only when the trend is strong, and only once momentum resumes.
+//
+// Confluence stack (all must agree before a long):
+//   1. TREND REGIME   — close > 200 EMA and 50 EMA > 200 EMA (aligned uptrend).
+//   2. TREND STRENGTH — ADX(14) > threshold, so we skip range-bound chop.
+//   3. PULLBACK       — price dips to/below the 20 EMA, arming a setup.
+//   4. ENTRY TRIGGER  — price reclaims the 20 EMA on a bullish bar (optionally
+//                        with RSI above a floor) → buy near the pullback low.
+//
+// Risk & exits (whichever happens first):
+//   • STOP LOSS   — entry − (ATR × multiple).
+//   • TAKE PROFIT — fixed reward:risk multiple of the initial risk (default 2R).
+//   • TREND EXIT  — close below the chosen EMA (default 200 EMA, or 50/Off). The
+//                    200 EMA default avoids exiting on normal pullbacks.
+//   A re-entry cooldown prevents exiting and immediately buying back in.
+//
+// Mechanics: long-only, strictly alternating (buy when flat, exit when in a
+// position), no repaint (confirmed bar close only), one "Any alert() function
+// call" alert drives everything. Same webhook JSON contract as v1/v2 (+ reason).
+//
+// Sources / rationale: 20/50/200 EMA stack and RSI 40-50 pullback zone for 4H
+// swing entries; ADX > ~20-25 as a trend-strength filter to cut false signals;
+// multi-indicator confluence to reduce whipsaw. NOT financial advice — backtest
+// and paper-trade before risking capital.
+// ============================================================================
+indicator("AlgoFoundry — Trend-Pullback Momentum (4H)", overlay=true)
+
+// ============================== INPUTS ======================================
+grpT = "Trend regime"
+emaFastLen = input.int(20,  "Fast EMA (pullback ref)", minval=1, group=grpT)
+emaMidLen  = input.int(50,  "Mid EMA",  minval=1, group=grpT)
+emaSlowLen = input.int(200, "Slow EMA (trend)", minval=1, group=grpT)
+
+grpS = "Trend strength"
+adxLen = input.int(14, "ADX / DI length", minval=1, group=grpS)
+adxMin = input.float(20.0, "Minimum ADX", minval=0, step=0.5, group=grpS, tooltip="Above ~20-25 = trending. Higher = stricter.")
+
+grpM = "Pullback & entry trigger"
+rsiLen       = input.int(14, "RSI length", minval=1, group=grpM)
+useRsiFilter = input.bool(true, "Require RSI above floor at entry", group=grpM, tooltip="Skip weak bounces while momentum is still falling.")
+rsiFloor     = input.float(45.0, "RSI floor", minval=1, maxval=99, group=grpM)
+
+grpR = "Risk & exits"
+atrLen      = input.int(14, "ATR length", minval=1, group=grpR)
+atrStopMult = input.float(2.0, "Stop = entry − N×ATR", minval=0.1, step=0.1, group=grpR)
+rrTarget    = input.float(2.0, "Take-profit (reward:risk)", minval=0.1, step=0.1, group=grpR)
+trendExitRef = input.string("Slow EMA (200)", "Trend-exit reference", options=["Off", "Mid EMA (50)", "Slow EMA (200)"], group=grpR, tooltip="Which break closes the trade. Slow EMA avoids exiting on normal pullbacks.")
+cooldownBars = input.int(2, "Re-entry cooldown (bars)", minval=0, group=grpR, tooltip="Bars to wait after any exit before a new entry.")
+
+grpW = "Webhook"
+webhookSecret = input.string("PASTE_YOUR_SECRET_HERE", "Webhook secret", group=grpW, tooltip="Must match the secret in the AlgoFoundry dashboard.")
+sendPrice     = input.bool(true, "Include price in payload", group=grpW)
+
+// ============================ INDICATORS ====================================
+emaFast = ta.ema(close, emaFastLen)
+emaMid  = ta.ema(close, emaMidLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsi     = ta.rsi(close, rsiLen)
+atr     = ta.atr(atrLen)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxLen)
+
+// ============================ CONDITIONS ====================================
+regimeOK = close > emaSlow and emaMid > emaSlow and adx > adxMin
+
+// Pullback: price dips to/below the Fast EMA inside the uptrend → arm a setup.
+var bool armed = false
+if not regimeOK
+    armed := false
+else if close < emaFast
+    armed := true
+
+// Entry trigger: price reclaims the Fast EMA (turns back up) on a bullish bar.
+// Buying the reclaim enters near the pullback low, instead of waiting for RSI to
+// climb back to 50 (which lags and prints buys late / in odd spots).
+rsiOK = not useRsiFilter or rsi > rsiFloor
+entryTrigger = armed and regimeOK and rsiOK and ta.crossover(close, emaFast) and close > open
+
+// ====================== STATE MACHINE (alternating) =========================
+var bool  inPos       = false
+var float entryPrice  = na
+var float stopPrice   = na
+var float targetPrice = na
+var int   lastExitBar = na
+
+cooldownOK = na(lastExitBar) or (bar_index - lastExitBar) >= cooldownBars
+
+// Exit tests (evaluated against committed in-position state).
+trendExitLevel = trendExitRef == "Mid EMA (50)" ? emaMid : emaSlow
+stopHit   = inPos and not na(stopPrice)   and close < stopPrice
+targetHit = inPos and not na(targetPrice) and close >= targetPrice
+trendExit = inPos and trendExitRef != "Off" and close < trendExitLevel
+
+// Resolve signals (priority: stop > target > trend break). Mutually exclusive
+// with the entry because entry requires flat.
+sellByStop  = stopHit
+sellByTP    = targetHit and not sellByStop
+sellByTrend = trendExit and not sellByStop and not sellByTP
+sellSignal  = sellByStop or sellByTP or sellByTrend
+buySignal   = entryTrigger and cooldownOK and not inPos
+
+// State updates (commit at bar close).
+if sellSignal
+    inPos       := false
+    entryPrice  := na
+    stopPrice   := na
+    targetPrice := na
+    lastExitBar := bar_index
+if buySignal
+    inPos       := true
+    entryPrice  := close
+    stopPrice   := close - atrStopMult * atr
+    targetPrice := close + rrTarget * (atrStopMult * atr)
+    armed       := false
+
+// ============================== VISUALS =====================================
+plot(emaFast, color=color.new(color.aqua, 0),   title="Fast EMA")
+plot(emaMid,  color=color.new(color.orange, 0),  title="Mid EMA")
+plot(emaSlow, color=color.new(color.gray, 0),    linewidth=2, title="Slow EMA")
+plot(inPos ? entryPrice  : na, color=color.new(color.blue, 0),  style=plot.style_linebr, title="Entry")
+plot(inPos ? stopPrice   : na, color=color.new(color.red, 0),   style=plot.style_linebr, title="Stop")
+plot(inPos ? targetPrice : na, color=color.new(color.green, 0), style=plot.style_linebr, title="Target")
+bgcolor(regimeOK ? color.new(color.green, 94) : na, title="Uptrend regime")
+
+plotshape(buySignal,   title="Buy",         style=shape.labelup,      location=location.belowbar, text="Buy", textcolor=color.white, color=color.new(color.green, 0))
+plotshape(sellByTP,    title="Take Profit", style=shape.triangledown, location=location.abovebar, text="TP",  textcolor=color.white, color=color.new(color.green, 0))
+plotshape(sellByStop,  title="Stop Loss",   style=shape.xcross,       location=location.abovebar, text="SL",  textcolor=color.white, color=color.new(color.red, 0))
+plotshape(sellByTrend, title="Trend Exit",  style=shape.triangledown, location=location.abovebar, text="X",   textcolor=color.white, color=color.new(color.orange, 0))
+
+// Compact status panel.
+var table info = table.new(position.top_right, 2, 4, border_width=1, frame_color=color.new(color.gray, 60), frame_width=1)
+if barstate.islast
+    regimeTxt = regimeOK ? "UPTREND" : "no-trade"
+    regimeCol = regimeOK ? color.new(color.green, 0) : color.new(color.gray, 30)
+    table.cell(info, 0, 0, "Regime", text_color=color.gray, text_size=size.small)
+    table.cell(info, 1, 0, regimeTxt, text_color=regimeCol, text_size=size.small)
+    table.cell(info, 0, 1, "ADX", text_color=color.gray, text_size=size.small)
+    table.cell(info, 1, 1, str.tostring(adx, "#.0"), text_color=color.new(color.white, 0), text_size=size.small)
+    table.cell(info, 0, 2, "RSI", text_color=color.gray, text_size=size.small)
+    table.cell(info, 1, 2, str.tostring(rsi, "#.0"), text_color=color.new(color.white, 0), text_size=size.small)
+    table.cell(info, 0, 3, "Position", text_color=color.gray, text_size=size.small)
+    table.cell(info, 1, 3, inPos ? "LONG" : (armed ? "armed" : "flat"), text_color=inPos ? color.new(color.green, 0) : color.new(color.gray, 20), text_size=size.small)
+
+// ============================== ALERTS ======================================
+priceFrag = sendPrice ? ',"price":"' + str.tostring(close) + '"' : ''
+
+if buySignal and barstate.isconfirmed
+    alert('{"action":"buy","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"trend_pullback_entry"}', alert.freq_once_per_bar_close)
+
+if sellByTP and barstate.isconfirmed
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"take_profit"}', alert.freq_once_per_bar_close)
+
+if sellByStop and barstate.isconfirmed
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"stop_loss"}', alert.freq_once_per_bar_close)
+
+if sellByTrend and barstate.isconfirmed
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"' + priceFrag + ',"reason":"trend_exit"}', alert.freq_once_per_bar_close)

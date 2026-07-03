@@ -154,6 +154,9 @@
     .switchrow label:hover { border-color:var(--line-hi); }
     .switchrow input { width:auto; accent-color:var(--green); }
 
+    .htmx-indicator { opacity:0; transition:opacity .2s; }
+    .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity:1; }
+
     .tab { display:none; animation:fade .2s ease; }
     .tab.active { display:block; }
     @keyframes fade { from { opacity:0; transform:translateY(4px); } to { opacity:1; } }
@@ -174,6 +177,9 @@
       <button class="navitem active" data-tab="trading" onclick="showTab('trading')">
         <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>
         <span>Trading</span></button>
+      <button class="navitem" data-tab="longterm" onclick="showTab('longterm')">
+        <svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 15l5-5 4 3 7-8"/></svg>
+        <span>Long-Term</span></button>
       <button class="navitem" data-tab="events" onclick="showTab('events')">
         <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
         <span>Event Log</span></button>
@@ -221,6 +227,34 @@
             <p class="mut" style="font-size:12px;margin-bottom:0">Manual orders bypass the
               buy-if-flat / sell-if-holding gating. Use with care.</p>
           </form>
+        </div>
+      </section>
+
+      <!-- ============ LONG-TERM TAB ============ -->
+      <section id="longterm" class="tab">
+        <div class="card">
+          <h2>Long-Term Portfolio</h2>
+          <div class="btnrow" style="margin-top:0;margin-bottom:14px">
+            <button hx-post="/longterm/run" hx-target="#lt-run-status" hx-swap="innerHTML">Run now</button>
+            <button class="ghost" hx-get="/longterm" hx-target="#longterm-body" hx-swap="innerHTML">Refresh</button>
+            <span id="lt-run-status" class="mut" style="align-self:center;font-size:12px"></span>
+          </div>
+
+          <form hx-post="/longterm/analyze" hx-target="#lt-adhoc-result" hx-swap="innerHTML"
+                hx-indicator="#lt-adhoc-spin"
+                style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px">
+            <div style="flex:1;min-width:180px">
+              <label style="margin-top:0">Analyze a symbol</label>
+              <input name="symbol" placeholder="e.g. AAPL or VUAG.L" autocomplete="off" required>
+            </div>
+            <label class="switchrow" style="margin:0"><input type="checkbox" name="save" value="on">
+              <span style="display:inline">save to history</span></label>
+            <button type="submit">Analyze</button>
+            <span id="lt-adhoc-spin" class="htmx-indicator mut" style="align-self:center;font-size:12px">Analyzing…</span>
+          </form>
+          <div id="lt-adhoc-result"></div>
+
+          <div id="longterm-body" hx-get="/longterm" hx-trigger="load" style="margin-top:14px">Loading…</div>
         </div>
       </section>
 
@@ -299,6 +333,56 @@
         </div>
 
         <div class="card">
+          <h2>Long-Term Portfolio</h2>
+          <form method="post" action="/longterm/settings">
+            <div class="row">
+              <div><label>Trading 212 API key</label>
+                <input name="lt_t212_api_key" value="{{ settings.lt_t212_api_key }}"></div>
+              <div><label>Trading 212 environment</label>
+                <select name="lt_t212_env">
+                  <option value="demo" {{ 'selected' if settings.lt_t212_env=='demo' }}>demo</option>
+                  <option value="live" {{ 'selected' if settings.lt_t212_env=='live' }}>live</option>
+                </select></div>
+            </div>
+            <div class="row">
+              <div><label>Finnhub API key</label>
+                <input name="lt_finnhub_key" value="{{ settings.lt_finnhub_key }}"></div>
+              <div><label>Schedule time (HH:MM, {{ settings.lt_schedule_tz }})</label>
+                <input name="lt_schedule_time" value="{{ settings.lt_schedule_time }}"></div>
+            </div>
+            <div class="row">
+              <div><label>OpenRouter model (primary)</label>
+                <input name="lt_openrouter_model" value="{{ settings.lt_openrouter_model }}"></div>
+              <div><label>OpenRouter model (fallback)</label>
+                <input name="lt_openrouter_fallback" value="{{ settings.lt_openrouter_fallback }}"></div>
+            </div>
+            <div class="row">
+              <div><label>CallMeBot phone</label>
+                <input name="lt_callmebot_phone" value="{{ settings.lt_callmebot_phone }}"></div>
+              <div><label>CallMeBot API key</label>
+                <input name="lt_callmebot_key" value="{{ settings.lt_callmebot_key }}"></div>
+            </div>
+            <div class="row" style="grid-template-columns:1fr 1fr 1fr 1fr">
+              <div><label>Weight: technical</label>
+                <input name="lt_weight_technical" type="number" step="any" value="{{ settings.lt_weight_technical }}"></div>
+              <div><label>Weight: fundamental</label>
+                <input name="lt_weight_fundamental" type="number" step="any" value="{{ settings.lt_weight_fundamental }}"></div>
+              <div><label>Weight: analyst</label>
+                <input name="lt_weight_analyst" type="number" step="any" value="{{ settings.lt_weight_analyst }}"></div>
+              <div><label>Weight: news</label>
+                <input name="lt_weight_news" type="number" step="any" value="{{ settings.lt_weight_news }}"></div>
+            </div>
+            <div class="row">
+              <div><label>Threshold: buy</label>
+                <input name="lt_threshold_buy" type="number" step="any" value="{{ settings.lt_threshold_buy }}"></div>
+              <div><label>Threshold: sell</label>
+                <input name="lt_threshold_sell" type="number" step="any" value="{{ settings.lt_threshold_sell }}"></div>
+            </div>
+            <div class="btnrow"><button type="submit">Save long-term settings</button></div>
+          </form>
+        </div>
+
+        <div class="card">
           <h2>Webhook</h2>
           <label>Endpoint (point your TradingView alert here)</label>
           <div class="pill">POST&nbsp;&nbsp;https://YOUR-DOMAIN/webhook</div>
@@ -322,6 +406,7 @@
   <script>
     var TABS = {
       trading:  ["Trading", "Live positions & manual execution"],
+      longterm: ["Long-Term", "Trading 212 portfolio verdicts & scheduling"],
       events:   ["Event Log", "Signals, orders & system events"],
       settings: ["Settings", "Connection, sizing & webhook"]
     };

@@ -1,0 +1,116 @@
+//@version=5
+// ============================================================================
+// AlgoFoundry — combined ENTRY + EXIT indicator
+// Long-only swing strategy for the 4-hour timeframe.
+// Emits BOTH buy and sell webhooks from a SINGLE TradingView alert
+// (condition = "Any alert() function call").
+// ============================================================================
+//
+// Strategy (strictly alternating)
+//   • Entry (buy)  : unfiltered ATR trailing-stop flip to long.
+//   • Exit  (sell) : take-profit on a strong bearish close after RSI crosses
+//                    back down through the overbought level.
+//   Signals alternate: BUY -> TAKE-PROFIT -> BUY -> TAKE-PROFIT ...
+//   You get exactly one take-profit after each buy before the next buy can fire.
+//
+// Behaviour / fixes
+//   1. ALTERNATION — the indicator tracks an internal in-position flag so a buy
+//      only fires when flat and a take-profit only fires when in a position.
+//      No repeated buys, no take-profit without a preceding buy. Because entry
+//      and exit now live in ONE script, this internal state is self-consistent
+//      (the original bug was an exit gated on a *different* script's state).
+//   2. NO REPAINT — every signal is evaluated on the CONFIRMED (closed) bar via
+//      `barstate.isconfirmed` + `alert.freq_once_per_bar_close`. All inputs are
+//      close-based, so live signals match what you see on the chart.
+//   3. FIRES ONCE PER FLIP — entry triggers on the bar the trail flips long
+//      (transition), not on every bar the trend stays long.
+//   4. ONE ALERT — buy and take-profit come from the same indicator, so a single
+//      "Any alert() function call" alert covers the whole strategy.
+//   Note: the only exit is the take-profit — there is no stop-loss. A long can
+//   be held through a drawdown until a take-profit condition occurs.
+//
+// Setup: paste your AlgoFoundry webhook secret below, add this indicator to a
+// 4H chart, then create ONE alert: condition "Any alert() function call",
+// "Once Per Bar Close", Webhook URL = https://YOUR-DOMAIN/webhook
+// ============================================================================
+indicator("AlgoFoundry Strategy — ATR entry + RSI take-profit", overlay=true)
+
+// === INPUTS ===
+grpE = "Entry — ATR trailing stop"
+atrPeriod     = input.int(20, "ATR Period", group=grpE, tooltip="Lower = more sensitive")
+atrMultiplier = input.float(4.0, "ATR Multiplier", minval=0.5, maxval=1000, step=0.1, group=grpE, tooltip="Main aggression dial. Lower = earlier entries.")
+
+grpX = "Exit — take profit"
+rsi_len = input.int(14, "RSI Length", group=grpX)
+rsi_ob  = input.int(70, "RSI Overbought Level", group=grpX)
+
+grpV = "Visuals"
+vol_length = input.int(20, "Volume SMA length", minval=1, group=grpV)
+smoothLen  = input.int(20, "VWMA Smooth", minval=1, group=grpV)
+src        = input.source(close, "Source", group=grpV)
+
+grpW = "Webhook"
+webhookSecret = input.string("PASTE_YOUR_SECRET_HERE", "Webhook secret", group=grpW, tooltip="Must match the secret shown in the AlgoFoundry dashboard.")
+
+// === ATR TRAILING STOP ===
+atr   = ta.atr(atrPeriod)
+nLoss = atrMultiplier * atr
+
+var float xATRTrailingStop = na
+xATRTrailingStop := if (close > nz(xATRTrailingStop[1], 0) and close[1] > nz(xATRTrailingStop[1], 0))
+    math.max(nz(xATRTrailingStop[1]), close - nLoss)
+else if (close < nz(xATRTrailingStop[1], 0) and close[1] < nz(xATRTrailingStop[1], 0))
+    math.min(nz(xATRTrailingStop[1]), close + nLoss)
+else if (close > nz(xATRTrailingStop[1], 0))
+    close - nLoss
+else
+    close + nLoss
+
+var int pos = 0
+pos := if (close[1] < nz(xATRTrailingStop[1], 0) and close > nz(xATRTrailingStop[1], 0))
+    1
+else if (close[1] > nz(xATRTrailingStop[1], 0) and close < nz(xATRTrailingStop[1], 0))
+    -1
+else
+    nz(pos[1], 0)
+
+// === SIGNALS (alternating: buy -> take-profit -> buy -> ...) ===
+// Raw conditions:
+rawBuy = pos == 1 and pos[1] != 1                          // ATR trail flips long
+rsi                 = ta.rsi(close, rsi_len)
+isOverbought        = ta.crossunder(rsi, rsi_ob)
+strongBearishCandle = close < open and close < low[1]
+rawTakeProfit = isOverbought and strongBearishCandle       // strong bearish close
+
+// Alternation state: only buy when flat, only take profit when in a position.
+// This guarantees exactly one take-profit after each buy, then the next buy, etc.
+// (The AlgoFoundry bridge independently enforces buy-if-flat / sell-if-holding,
+//  so the two stay consistent even if a webhook is missed.)
+var bool inPos = false
+buySignal  = rawBuy and not inPos
+sellSignal = rawTakeProfit and inPos        // mutually exclusive with buySignal
+if buySignal
+    inPos := true
+if sellSignal
+    inPos := false
+
+// === VISUALS ===
+stopColor = pos == 1 ? color.new(color.green, 0) : color.new(color.red, 0)
+plot(xATRTrailingStop, color=stopColor, linewidth=2, title="ATR Trailing Stop")
+vwmaOut = ta.vwma(src, smoothLen)
+plot(math.avg(vwmaOut, xATRTrailingStop), color=color.new(color.aqua, 0), title="ATR avg")
+
+vol_avg          = ta.sma(volume, vol_length)
+unusual_vol_up   = volume > vol_avg * 1.2 and close > open
+unusual_vol_down = volume > vol_avg * 1.2 and close < open
+barcolor(unusual_vol_up or unusual_vol_down ? color.new(color.yellow, 0) : na, title="Unusual Volume")
+
+plotshape(buySignal,  title="Buy Signal",         style=shape.labelup,      location=location.belowbar, text="Buy", textcolor=color.white, color=color.new(color.green, 0))
+plotshape(sellSignal, title="Take Profit Signal", style=shape.triangledown, location=location.abovebar, text="TP",  textcolor=color.white, color=color.new(color.purple, 0))
+
+// === ALERTS (one alert covers both; fire on the confirmed bar close only) ===
+if buySignal and barstate.isconfirmed
+    alert('{"action":"buy","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"}', alert.freq_once_per_bar_close)
+
+if sellSignal and barstate.isconfirmed
+    alert('{"action":"sell","symbol":"' + syminfo.ticker + '","secret":"' + webhookSecret + '"}', alert.freq_once_per_bar_close)

@@ -35,6 +35,29 @@ DEFAULTS: dict[str, Any] = {
     "allow_buy": True,
     "allow_sell": True,
     "webhook_secret": "",         # set on first run if empty
+    # ---- Long-Term Portfolio Tracker (Trading 212) — lt_ prefixed keys ----
+    # Config for the long-term feature reuses this settings table; it never
+    # touches the swing-trading keys above.
+    "lt_t212_api_key": "",
+    "lt_t212_env": "demo",            # demo | live
+    "lt_finnhub_key": "",
+    "lt_callmebot_phone": "",
+    "lt_callmebot_key": "",
+    "lt_openrouter_model": "",
+    "lt_openrouter_fallback": "",
+    "lt_weight_technical": 1.0,
+    "lt_weight_fundamental": 1.0,
+    "lt_weight_analyst": 1.0,
+    "lt_weight_news": 1.0,
+    "lt_threshold_buy": 0.5,
+    "lt_threshold_sell": 0.75,
+    "lt_hysteresis_days": 2,
+    "lt_hysteresis_margin": 0.15,
+    "lt_earnings_freeze_days": 3,
+    "lt_max_drawdown_pct": 25.0,
+    "lt_schedule_time": "17:30",
+    "lt_schedule_tz": "America/New_York",
+    "lt_last_run_date": "",
 }
 
 _CASTS = {
@@ -47,6 +70,17 @@ _CASTS = {
     "limit_offset_pct": float,
     "max_positions": int,
     "max_position_value": float,
+    # ---- Long-Term Portfolio Tracker casts ----
+    "lt_weight_technical": float,
+    "lt_weight_fundamental": float,
+    "lt_weight_analyst": float,
+    "lt_weight_news": float,
+    "lt_threshold_buy": float,
+    "lt_threshold_sell": float,
+    "lt_hysteresis_days": int,
+    "lt_hysteresis_margin": float,
+    "lt_earnings_freeze_days": int,
+    "lt_max_drawdown_pct": float,
 }
 
 
@@ -70,6 +104,68 @@ def init_db() -> None:
                    symbol TEXT,
                    status TEXT,               -- accepted | rejected | filled | ...
                    detail TEXT
+               )"""
+        )
+        # ---- Long-Term Portfolio Tracker (Trading 212) tables ----
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS longterm_holdings_snapshot (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   date TEXT NOT NULL,
+                   t212_ticker TEXT NOT NULL,
+                   symbol TEXT,
+                   qty REAL,
+                   avg_price REAL,
+                   current_price REAL,
+                   pnl REAL,
+                   currency TEXT,
+                   created_ts REAL,
+                   UNIQUE(date, t212_ticker)
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS longterm_verdicts (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   date TEXT NOT NULL,
+                   symbol TEXT NOT NULL,
+                   score_technical REAL,
+                   score_fundamental REAL,
+                   score_analyst REAL,
+                   score_news REAL,
+                   composite REAL,
+                   label TEXT,
+                   confidence REAL,
+                   rationale TEXT,
+                   override_flag INTEGER DEFAULT 0,
+                   review_flags TEXT,
+                   data_quality TEXT,
+                   price_at_verdict REAL,
+                   model_used TEXT,
+                   prompt_version TEXT,
+                   raw_ai_response TEXT,
+                   fwd_return_7d REAL,
+                   fwd_return_30d REAL,
+                   fwd_return_90d REAL,
+                   created_ts REAL,
+                   UNIQUE(date, symbol)
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS longterm_instruments (
+                   t212_ticker TEXT PRIMARY KEY,
+                   yf_symbol TEXT,
+                   finnhub_symbol TEXT,
+                   currency TEXT,
+                   exchange TEXT,
+                   instrument_type TEXT,        -- equity | etf | unknown
+                   manual_override INTEGER DEFAULT 0,
+                   updated_ts REAL
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS longterm_fundamentals_cache (
+                   symbol TEXT PRIMARY KEY,
+                   payload TEXT,                 -- JSON blob
+                   fetched_ts REAL
                )"""
         )
         # Seed any missing defaults.
@@ -149,3 +245,206 @@ def recent_events(limit: int = 50) -> list[dict[str, Any]]:
             "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- Long-Term Portfolio Tracker CRUD helpers -----------------------------
+# Thin wrappers over the longterm_* tables. Idempotent upserts key on the
+# same UNIQUE constraints declared in init_db().
+
+
+def upsert_holdings_snapshot(
+    *,
+    date: str,
+    t212_ticker: str,
+    symbol: str | None = None,
+    qty: float | None = None,
+    avg_price: float | None = None,
+    current_price: float | None = None,
+    pnl: float | None = None,
+    currency: str | None = None,
+) -> None:
+    """Insert or replace a single holdings snapshot row (idempotent on
+    date+t212_ticker)."""
+    with _lock, _conn() as conn:
+        conn.execute(
+            "INSERT INTO longterm_holdings_snapshot "
+            "(date, t212_ticker, symbol, qty, avg_price, current_price, pnl, "
+            " currency, created_ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(date, t212_ticker) DO UPDATE SET "
+            "  symbol=excluded.symbol, qty=excluded.qty, "
+            "  avg_price=excluded.avg_price, current_price=excluded.current_price, "
+            "  pnl=excluded.pnl, currency=excluded.currency, "
+            "  created_ts=excluded.created_ts",
+            (
+                date, t212_ticker, symbol, qty, avg_price, current_price, pnl,
+                currency, time.time(),
+            ),
+        )
+
+
+def get_holdings_snapshot(date: str) -> list[dict[str, Any]]:
+    with _lock, _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM longterm_holdings_snapshot WHERE date=? "
+            "ORDER BY t212_ticker",
+            (date,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_verdict(*, date: str, symbol: str, **fields: Any) -> None:
+    """Idempotent upsert of a verdict row keyed on (date, symbol).
+
+    Any of the verdict columns may be passed as keyword arguments; unknown
+    keys are ignored so callers can hand us a superset dict.
+    """
+    allowed = {
+        "score_technical", "score_fundamental", "score_analyst", "score_news",
+        "composite", "label", "confidence", "rationale", "override_flag",
+        "review_flags", "data_quality", "price_at_verdict", "model_used",
+        "prompt_version", "raw_ai_response", "fwd_return_7d", "fwd_return_30d",
+        "fwd_return_90d",
+    }
+    cols = ["date", "symbol"]
+    vals: list[Any] = [date, symbol]
+    for key in allowed:
+        if key in fields:
+            cols.append(key)
+            vals.append(fields[key])
+    cols.append("created_ts")
+    vals.append(time.time())
+
+    placeholders = ", ".join("?" for _ in cols)
+    updates = ", ".join(
+        f"{c}=excluded.{c}" for c in cols if c not in ("date", "symbol")
+    )
+    with _lock, _conn() as conn:
+        conn.execute(
+            f"INSERT INTO longterm_verdicts ({', '.join(cols)}) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT(date, symbol) DO UPDATE SET {updates}",
+            vals,
+        )
+
+
+def get_verdict(date: str, symbol: str) -> dict[str, Any] | None:
+    with _lock, _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM longterm_verdicts WHERE date=? AND symbol=?",
+            (date, symbol),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_verdicts_for_symbol(symbol: str, limit: int = 50) -> list[dict[str, Any]]:
+    with _lock, _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM longterm_verdicts WHERE symbol=? "
+            "ORDER BY date DESC LIMIT ?",
+            (symbol, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_verdicts_for_date(date: str) -> list[dict[str, Any]]:
+    with _lock, _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM longterm_verdicts WHERE date=? ORDER BY symbol",
+            (date,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def recent_verdicts(limit: int = 50) -> list[dict[str, Any]]:
+    with _lock, _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM longterm_verdicts ORDER BY date DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_instrument(t212_ticker: str) -> dict[str, Any] | None:
+    with _lock, _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM longterm_instruments WHERE t212_ticker=?",
+            (t212_ticker,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_instrument(
+    *,
+    t212_ticker: str,
+    yf_symbol: str | None = None,
+    finnhub_symbol: str | None = None,
+    currency: str | None = None,
+    exchange: str | None = None,
+    instrument_type: str | None = None,
+    manual_override: int = 0,
+) -> None:
+    """Insert or update an instrument mapping.
+
+    NOTE: a row whose existing ``manual_override`` is set is never overwritten
+    by a call with ``manual_override=0`` — auto-mapping must not clobber a
+    human-provided mapping. Callers that intend to set a manual mapping pass
+    ``manual_override=1``.
+    """
+    with _lock, _conn() as conn:
+        existing = conn.execute(
+            "SELECT manual_override FROM longterm_instruments WHERE t212_ticker=?",
+            (t212_ticker,),
+        ).fetchone()
+        if (
+            existing is not None
+            and existing["manual_override"]
+            and not manual_override
+        ):
+            return  # protect the manual mapping
+        conn.execute(
+            "INSERT INTO longterm_instruments "
+            "(t212_ticker, yf_symbol, finnhub_symbol, currency, exchange, "
+            " instrument_type, manual_override, updated_ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(t212_ticker) DO UPDATE SET "
+            "  yf_symbol=excluded.yf_symbol, "
+            "  finnhub_symbol=excluded.finnhub_symbol, "
+            "  currency=excluded.currency, exchange=excluded.exchange, "
+            "  instrument_type=excluded.instrument_type, "
+            "  manual_override=excluded.manual_override, "
+            "  updated_ts=excluded.updated_ts",
+            (
+                t212_ticker, yf_symbol, finnhub_symbol, currency, exchange,
+                instrument_type, int(manual_override), time.time(),
+            ),
+        )
+
+
+def get_fundamentals_cache(symbol: str) -> dict[str, Any] | None:
+    """Return the cached fundamentals row for ``symbol`` with ``payload``
+    already JSON-decoded, or None if not cached."""
+    with _lock, _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM longterm_fundamentals_cache WHERE symbol=?",
+            (symbol,),
+        ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    try:
+        out["payload"] = json.loads(out["payload"]) if out["payload"] else None
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return out
+
+
+def set_fundamentals_cache(symbol: str, payload: Any) -> None:
+    with _lock, _conn() as conn:
+        conn.execute(
+            "INSERT INTO longterm_fundamentals_cache (symbol, payload, fetched_ts) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(symbol) DO UPDATE SET "
+            "  payload=excluded.payload, fetched_ts=excluded.fetched_ts",
+            (symbol, json.dumps(payload), time.time()),
+        )

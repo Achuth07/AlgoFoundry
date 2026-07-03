@@ -1,0 +1,106 @@
+//@version=5
+strategy("AlgoFoundry Strategy v2 — BACKTEST", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// ============================== INPUTS ======================================
+grpE = "Entry — ATR trailing stop"
+atrPeriod     = input.int(20, "ATR Period", group=grpE)
+atrMultiplier = input.float(4.0, "ATR Multiplier", minval=0.5, maxval=1000, step=0.1, group=grpE)
+
+grpF = "Entry filters"
+useTrend  = input.bool(false, "Require uptrend (price > EMA)", group=grpF)
+trendLen  = input.int(200, "Trend EMA length", minval=1, group=grpF)
+useVol    = input.bool(false, "Require volume confirmation", group=grpF)
+volLen    = input.int(20, "Volume SMA length", minval=1, group=grpF)
+volMult   = input.float(1.5, "Volume multiplier", minval=0.1, step=0.1, group=grpF)
+
+grpX = "Exit — take profit"
+rsi_len       = input.int(14, "RSI Length", group=grpX)
+rsi_ob        = input.int(70, "RSI Overbought Level", group=grpX)
+requireBear   = input.bool(true, "Require strong bearish candle", group=grpX)
+
+grpS = "Exit — stop loss"
+useStop  = input.bool(true, "Enable stop-loss exit", group=grpS)
+stopType = input.string("ATR multiple", "Stop type", options=["ATR multiple", "Percent", "Trail down-flip"], group=grpS)
+stopATR  = input.float(3.0, "Stop = entry - N×ATR", minval=0.1, step=0.1, group=grpS)
+stopPct  = input.float(8.0, "Stop percent below entry", minval=0.1, step=0.1, group=grpS)
+
+grpR = "Risk"
+cooldownBars = input.int(0, "Re-entry cooldown (bars)", minval=0, group=grpR)
+
+// ============================ INDICATORS ====================================
+atr   = ta.atr(atrPeriod)
+nLoss = atrMultiplier * atr
+rsi   = ta.rsi(close, rsi_len)
+
+// ---- ATR trailing stop ----
+var float xATRTrailingStop = na
+xATRTrailingStop := if (close > nz(xATRTrailingStop[1], 0) and close[1] > nz(xATRTrailingStop[1], 0))
+    math.max(nz(xATRTrailingStop[1]), close - nLoss)
+else if (close < nz(xATRTrailingStop[1], 0) and close[1] < nz(xATRTrailingStop[1], 0))
+    math.min(nz(xATRTrailingStop[1]), close + nLoss)
+else if (close > nz(xATRTrailingStop[1], 0))
+    close - nLoss
+else
+    close + nLoss
+
+var int pos = 0
+pos := if (close[1] < nz(xATRTrailingStop[1], 0) and close > nz(xATRTrailingStop[1], 0))
+    1
+else if (close[1] > nz(xATRTrailingStop[1], 0) and close < nz(xATRTrailingStop[1], 0))
+    -1
+else
+    nz(pos[1], 0)
+
+// ============================ CONDITIONS ====================================
+rawBuy = pos == 1 and pos[1] != 1
+trendOK = not useTrend or close > ta.ema(close, trendLen)
+volOK   = not useVol   or (volume > ta.sma(volume, volLen) * volMult and close > open)
+
+strongBearishCandle = close < open and close < low[1]
+rsiTP = ta.crossunder(rsi, rsi_ob) and (not requireBear or strongBearishCandle)
+trailDownFlip = pos == -1 and pos[1] != -1
+
+// ====================== STATE MACHINE (alternating) =========================
+var bool  inPos      = false
+var float entryPrice = na
+var float stopLevel  = na
+var int   lastExitBar = na
+
+cooldownOK = na(lastExitBar) or (bar_index - lastExitBar) >= cooldownBars
+entryCond  = rawBuy and trendOK and volOK and cooldownOK
+
+stopHit = useStop and (
+     (stopType == "Trail down-flip" and trailDownFlip) or
+     (not na(stopLevel) and close < stopLevel))
+
+sellByTP   = inPos and rsiTP
+sellByStop = inPos and stopHit and not sellByTP
+sellSignal = sellByTP or sellByStop
+buySignal  = entryCond and not inPos
+
+if sellSignal
+    inPos      := false
+    entryPrice := na
+    stopLevel  := na
+    lastExitBar := bar_index
+if buySignal
+    inPos      := true
+    entryPrice := close
+    stopLevel  := stopType == "Percent" ? close * (1 - stopPct / 100) : (stopType == "ATR multiple" ? close - stopATR * atr : na)
+
+// ============================== EXECUTE BACKTEST ORDERS =====================================
+if buySignal
+    strategy.entry("Long", strategy.long)
+
+if sellByTP
+    strategy.close("Long", comment="TP")
+
+if sellByStop
+    strategy.close("Long", comment="SL")
+
+// ============================== VISUALS =====================================
+stopColor = pos == 1 ? color.new(color.green, 0) : color.new(color.red, 0)
+plot(xATRTrailingStop, color=stopColor, linewidth=2, title="ATR Trailing Stop")
+plot(inPos ? entryPrice : na, color=color.new(color.gray, 0), style=plot.style_linebr, title="Entry price")
+plot(inPos and not na(stopLevel) ? stopLevel : na, color=color.new(color.red, 0), style=plot.style_linebr, title="Stop level")
+bgcolor(inPos ? color.new(color.green, 92) : na, title="In position")

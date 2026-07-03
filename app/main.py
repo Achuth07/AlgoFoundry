@@ -14,8 +14,10 @@ Security model:
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import os
 import secrets
+import threading
 import time
 from typing import Annotated
 
@@ -84,6 +86,14 @@ GUI_PASS = os.environ.get("ALGOFOUNDRY_PASSWORD", "change-me-now")
 def _startup() -> None:
     db.init_db()
     db.log_event("info", detail="AlgoFoundry started")
+    # Start the long-term daily scheduler, unless running under pytest or the
+    # env kill-switch is set. Failures here must never block app startup.
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        try:
+            from .longterm.scheduler import start_scheduler
+            start_scheduler(app)
+        except Exception as exc:  # noqa: BLE001
+            db.log_event("error", detail=f"lt scheduler init failed: {exc}")
 
 
 # ---- auth ------------------------------------------------------------------
@@ -277,6 +287,207 @@ def api_manual(
 def api_regen_secret(_: str = Depends(require_login)) -> RedirectResponse:
     db.set_setting("webhook_secret", secrets.token_urlsafe(24))
     db.log_event("info", detail="webhook secret regenerated")
+    return RedirectResponse("/", status_code=303)
+
+
+# ---- long-term portfolio tracker (ALG-9) -----------------------------------
+def _lt_rows(snapshot: list[dict], verdicts_by_symbol: dict[str, dict]) -> list[dict]:
+    """Join snapshot holdings with their latest verdict into template rows."""
+    rows: list[dict] = []
+    for h in snapshot:
+        symbol = h.get("symbol") or h.get("t212_ticker")
+        v = verdicts_by_symbol.get(symbol) or {}
+        legs_used = []
+        for leg, key in (
+            ("technical", "score_technical"), ("fundamental", "score_fundamental"),
+            ("analyst", "score_analyst"), ("news", "score_news"),
+        ):
+            if v.get(key) is not None:
+                legs_used.append(leg)
+        rows.append({
+            "symbol": symbol,
+            "qty": h.get("qty"),
+            "avg_price": h.get("avg_price"),
+            "current_price": h.get("current_price"),
+            "pnl": h.get("pnl"),
+            "currency": h.get("currency"),
+            "label": v.get("label"),
+            "composite": v.get("composite"),
+            "confidence": v.get("confidence"),
+            "data_quality": v.get("data_quality"),
+            "review_flags": v.get("review_flags"),
+            "rationale": v.get("rationale"),
+            "legs_used_label": "legs: " + ", ".join(legs_used) if legs_used else "",
+        })
+    return rows
+
+
+@app.get("/longterm", response_class=HTMLResponse)
+def longterm(request: Request, _: str = Depends(require_login)) -> HTMLResponse:
+    # Use the latest snapshot date available (today if a run happened, else
+    # the most recent past run).
+    today = _dt.date.today().isoformat()
+    snapshot = db.get_holdings_snapshot(today)
+    snapshot_date = today
+    if not snapshot:
+        recent = db.recent_verdicts(1)
+        # Fall back to the most recent snapshot date by scanning verdicts.
+        with db._lock, db._conn() as conn:  # noqa: SLF001
+            row = conn.execute(
+                "SELECT date FROM longterm_holdings_snapshot "
+                "ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+        snapshot_date = row["date"] if row else today
+        snapshot = db.get_holdings_snapshot(snapshot_date) if row else []
+
+    verdicts = db.get_verdicts_for_date(snapshot_date)
+    verdict_date = snapshot_date
+    if not verdicts:
+        # Latest verdicts may be from an earlier date than today's snapshot.
+        recent = db.recent_verdicts(1)
+        if recent:
+            verdict_date = recent[0]["date"]
+            verdicts = db.get_verdicts_for_date(verdict_date)
+    verdicts_by_symbol = {v["symbol"]: v for v in verdicts}
+
+    rows = _lt_rows(snapshot, verdicts_by_symbol)
+    return templates.TemplateResponse(
+        request, "_longterm.html",
+        {
+            "rows": rows,
+            "snapshot_date": snapshot_date if snapshot else None,
+            "verdict_date": verdict_date if verdicts else None,
+        },
+    )
+
+
+@app.post("/longterm/run", response_class=HTMLResponse)
+def longterm_run(_: str = Depends(require_login)) -> HTMLResponse:
+    """Kick off a forced pipeline run in a background thread and return at once."""
+    def _bg() -> None:
+        try:
+            from .longterm.scheduler import run_daily_pipeline
+            run_daily_pipeline(force=True)
+        except Exception as exc:  # noqa: BLE001
+            db.log_event("error", action="lt_pipeline", detail=f"manual run failed: {exc}")
+
+    threading.Thread(target=_bg, daemon=True).start()
+    db.log_event("info", action="lt_pipeline", detail="manual run started")
+    return HTMLResponse(
+        '<span class="mut">Run started — watch the Event Log for progress.</span>'
+    )
+
+
+@app.get("/longterm/history", response_class=HTMLResponse)
+def longterm_history(
+    request: Request, symbol: str, _: str = Depends(require_login)
+) -> HTMLResponse:
+    verdicts = db.get_verdicts_for_symbol(symbol.strip().upper(), limit=30)
+    return templates.TemplateResponse(
+        request, "_longterm_history.html",
+        {"symbol": symbol.strip().upper(), "verdicts": verdicts},
+    )
+
+
+@app.post("/longterm/analyze", response_class=HTMLResponse)
+def longterm_analyze(
+    request: Request,
+    _: str = Depends(require_login),
+    symbol: str = Form(""),
+    save: str = Form("off"),
+) -> HTMLResponse:
+    """Ad-hoc single-symbol analysis (ALG-14).
+
+    Synchronous: runs the full long-term legs for one manually-entered symbol
+    and renders the verdict fragment. Never touches the daily-run state, never
+    notifies; persists only when the ``save`` checkbox is on (stamped ``adhoc``).
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return HTMLResponse(
+            templates.get_template("_longterm_analysis.html").render(
+                error="Enter a symbol to analyze (e.g. AAPL or VUAG.L)."
+            ),
+            status_code=400,
+        )
+
+    do_save = str(save).lower() in ("on", "true", "1", "yes")
+    try:
+        from .longterm.scheduler import analyze_adhoc
+        verdict = analyze_adhoc(sym, save=do_save)
+    except Exception as exc:  # noqa: BLE001 — never 500 to the user
+        db.log_event("error", action="lt_adhoc", symbol=sym,
+                     detail=f"adhoc analyze failed: {exc}")
+        return HTMLResponse(
+            templates.get_template("_longterm_analysis.html").render(
+                error=f"Analysis failed: {exc}"
+            ),
+            status_code=200,
+        )
+
+    legs = verdict.get("legs") or {}
+    leg_chips = []
+    for name, key in (
+        ("technical", "score_technical"), ("fundamental", "score_fundamental"),
+        ("analyst", "score_analyst"), ("news", "score_news"),
+    ):
+        leg = legs.get(name)
+        if leg is not None:
+            status = getattr(leg, "status", None) or "no_data"
+            score = getattr(leg, "score", None)
+        else:
+            # No LegResult (e.g. NO_DATA path or news leg absent): infer from the
+            # persisted per-leg score.
+            score = verdict.get(key)
+            status = "ok" if score is not None else "no_data"
+        leg_chips.append({"name": name, "status": status, "score": score})
+
+    return templates.TemplateResponse(
+        request, "_longterm_analysis.html",
+        {
+            "symbol": sym,
+            "verdict": verdict,
+            "leg_chips": leg_chips,
+            "saved": do_save,
+        },
+    )
+
+
+@app.post("/longterm/settings")
+def longterm_settings(
+    _: str = Depends(require_login),
+    lt_t212_api_key: str = Form(""),
+    lt_t212_env: str = Form("demo"),
+    lt_finnhub_key: str = Form(""),
+    lt_openrouter_model: str = Form(""),
+    lt_openrouter_fallback: str = Form(""),
+    lt_callmebot_phone: str = Form(""),
+    lt_callmebot_key: str = Form(""),
+    lt_weight_technical: float = Form(1.0),
+    lt_weight_fundamental: float = Form(1.0),
+    lt_weight_analyst: float = Form(1.0),
+    lt_weight_news: float = Form(1.0),
+    lt_threshold_buy: float = Form(0.5),
+    lt_threshold_sell: float = Form(0.75),
+    lt_schedule_time: str = Form("17:30"),
+) -> RedirectResponse:
+    db.update_settings({
+        "lt_t212_api_key": lt_t212_api_key,
+        "lt_t212_env": lt_t212_env,
+        "lt_finnhub_key": lt_finnhub_key,
+        "lt_openrouter_model": lt_openrouter_model,
+        "lt_openrouter_fallback": lt_openrouter_fallback,
+        "lt_callmebot_phone": lt_callmebot_phone,
+        "lt_callmebot_key": lt_callmebot_key,
+        "lt_weight_technical": lt_weight_technical,
+        "lt_weight_fundamental": lt_weight_fundamental,
+        "lt_weight_analyst": lt_weight_analyst,
+        "lt_weight_news": lt_weight_news,
+        "lt_threshold_buy": lt_threshold_buy,
+        "lt_threshold_sell": lt_threshold_sell,
+        "lt_schedule_time": lt_schedule_time,
+    })
+    db.log_event("info", detail="long-term settings updated")
     return RedirectResponse("/", status_code=303)
 
 

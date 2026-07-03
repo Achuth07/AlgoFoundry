@@ -1,0 +1,26 @@
+<h2 style="font-size:11.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);margin:0 0 12px;font-weight:700">
+  Verdict history — {{ symbol }}</h2>
+{% if not verdicts %}
+  <p class="mut">No prior verdicts for {{ symbol }}.</p>
+{% else %}
+<table>
+  <tr><th>Date</th><th>Verdict</th><th>Composite</th><th>Tech</th><th>Fund</th>
+      <th>Analyst</th><th>News</th><th>Flags</th></tr>
+  {% for v in verdicts %}
+  <tr>
+    <td class="mono mut">{{ v.date }}</td>
+    <td>
+      {% if v.label == 'BUY' %}<span class="badge on">BUY</span>
+      {% elif v.label == 'SELL' %}<span class="badge off">SELL</span>
+      {% else %}<span class="mut">{{ v.label or '—' }}</span>{% endif %}
+    </td>
+    <td class="mono num">{{ '%+.2f'|format(v.composite) if v.composite is not none else '—' }}</td>
+    <td class="mono num">{{ '%+.1f'|format(v.score_technical) if v.score_technical is not none else '·' }}</td>
+    <td class="mono num">{{ '%+.1f'|format(v.score_fundamental) if v.score_fundamental is not none else '·' }}</td>
+    <td class="mono num">{{ '%+.1f'|format(v.score_analyst) if v.score_analyst is not none else '·' }}</td>
+    <td class="mono num">{{ '%+.1f'|format(v.score_news) if v.score_news is not none else '·' }}</td>
+    <td class="mut" style="font-size:11px">{{ v.review_flags or '' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}

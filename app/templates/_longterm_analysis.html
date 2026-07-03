@@ -1,0 +1,47 @@
+{% if error %}
+  <p class="badge off" style="margin:0">{{ error }}</p>
+{% else %}
+<div style="border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-top:10px">
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <b style="font-size:15px">{{ symbol }}</b>
+    {% if verdict.label == 'BUY' %}<span class="badge on">BUY</span>
+    {% elif verdict.label == 'SELL' %}<span class="badge off">SELL</span>
+    {% elif verdict.label %}<span class="badge amber" style="background:rgba(138,163,158,.14);color:var(--muted)">HOLD</span>
+    {% else %}<span class="mut">—</span>{% endif %}
+    <span class="mono num mut" title="composite">
+      composite {{ '%+.2f'|format(verdict.composite) if verdict.composite is not none else '—' }}
+    </span>
+    {% if verdict.data_quality == 'no_data' %}
+      <span class="badge off">NO_DATA</span>
+    {% elif verdict.data_quality == 'partial_data' %}
+      <span class="badge amber">partial</span>
+    {% elif verdict.data_quality %}
+      <span class="mut" style="font-size:12px">full data</span>
+    {% endif %}
+  </div>
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+    {% for chip in leg_chips %}
+      {% if chip.status == 'ok' %}
+        <span class="badge on" style="font-size:11px">{{ chip.name }} {{ '%+.2f'|format(chip.score) if chip.score is not none else '' }}</span>
+      {% elif chip.status == 'not_applicable' %}
+        <span class="badge amber" style="font-size:11px;background:rgba(138,163,158,.14);color:var(--muted)">{{ chip.name }} n/a</span>
+      {% else %}
+        <span class="badge off" style="font-size:11px">{{ chip.name }} no_data</span>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  {% if verdict.review_flags %}
+  <div class="mut" style="font-size:11px;margin-top:10px">flags: {{ verdict.review_flags }}</div>
+  {% endif %}
+
+  {% if verdict.rationale %}
+  <div class="mut" style="max-width:520px;margin-top:10px;font-size:12.5px">{{ verdict.rationale }}</div>
+  {% endif %}
+
+  <div class="mut" style="font-size:11px;margin-top:12px;font-style:italic">
+    {% if saved %}saved (adhoc){% else %}not saved to history{% endif %}
+  </div>
+</div>
+{% endif %}

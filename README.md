@@ -55,16 +55,35 @@ and the bridge decides whether to act on it.
 ## Included strategy
 
 The repository ships a reference **long-only swing strategy for the 4-hour
-timeframe**, as two TradingView indicators:
+timeframe** as a single TradingView indicator,
+[`pine/algofoundry_strategy.pine`](pine/algofoundry_strategy.pine), which emits
+both signals:
 
-| Indicator | Signal |
-|-----------|--------|
-| `pine/entry_indicator.pine` | **Buy** — unfiltered ATR trailing-stop flip to long |
-| `pine/exit_indicator.pine`  | **Sell** — take-profit on a strong bearish close after an RSI overbought cross-under |
+| Signal | Logic |
+|--------|-------|
+| **Buy** | Unfiltered ATR trailing-stop flip to long (fires once on the flip) |
+| **Take-profit (sell)** | Strong bearish close after an RSI overbought cross-under |
 
-Both fire on **bar close** (`alert.freq_once_per_bar_close`) to avoid intrabar
-repainting. The bridge is strategy-agnostic, so you can point any indicator that
-emits `buy`/`sell` webhooks at it.
+Signals **strictly alternate** — buy → take-profit → buy → take-profit — so you
+get exactly one take-profit after each buy before the next buy can fire (the only
+exit is the take-profit; there is no stop-loss). Both fire on **bar close**
+(`alert.freq_once_per_bar_close`) to avoid intrabar repainting, and a single
+"Any alert() function call" alert drives the whole strategy. The bridge
+independently enforces buy-if-flat / sell-if-holding, so the two stay consistent
+even if a webhook is missed. The bridge is strategy-agnostic, so you can point any
+indicator that emits `buy`/`sell` webhooks at it.
+
+An enhanced variant, [`pine/algofoundry_strategy_v2.pine`](pine/algofoundry_strategy_v2.pine),
+adds an optional protective **stop-loss** exit, optional **trend / volume entry
+filters**, a **re-entry cooldown**, and a richer webhook payload (`price`,
+`reason`). With all toggles off it behaves exactly like v1.
+
+A second, independent strategy —
+[`pine/algofoundry_trend_pullback.pine`](pine/algofoundry_trend_pullback.pine) —
+is a research-based **trend-pullback momentum** system for 4H US equities: it buys
+pullbacks inside a confirmed 20/50/200 EMA uptrend, gated by an **ADX** strength
+filter, triggered when **RSI** reclaims 50, with an **ATR stop**, an **R-multiple
+take-profit**, and an optional trend-break exit.
 
 ## Tech stack
 
@@ -82,7 +101,7 @@ AlgoFoundry/
 │   ├── models.py        # Webhook payload schema
 │   ├── templates/       # HTMX dashboard + fragments
 │   └── static/          # Logo assets
-├── pine/                # TradingView entry & exit indicators
+├── pine/                # TradingView strategy indicator (entry + exit)
 ├── requirements.txt
 ├── run.sh
 └── .env.example
@@ -149,10 +168,11 @@ reverse proxy, and keep the shared secret in every alert payload.
 
 ### 4. Create TradingView alerts
 
-Add the indicators from `pine/` to your chart and paste the shared secret (shown
-in **Settings → Webhook**) into each indicator's *Webhook secret* input. Create an
-alert on each with condition **"Any alert() function call"**, frequency **Once Per
-Bar Close**, and Webhook URL `https://YOUR-DOMAIN/webhook`.
+Add `pine/algofoundry_strategy.pine` to your 4H chart and paste the shared secret
+(shown in **Settings → Webhook**) into the indicator's *Webhook secret* input.
+Create a **single** alert with condition **"Any alert() function call"**, frequency
+**Once Per Bar Close**, and Webhook URL `https://YOUR-DOMAIN/webhook`. The one
+alert handles both buy and sell.
 
 ## Webhook API
 
