@@ -600,10 +600,24 @@
                 <div></div>
               </div>
               <div class="row">
-                <div><label>OpenRouter model (primary)</label>
-                  <input name="lt_openrouter_model" value="{{ settings.lt_openrouter_model }}"></div>
-                <div><label>OpenRouter model (fallback)</label>
-                  <input name="lt_openrouter_fallback" value="{{ settings.lt_openrouter_fallback }}"></div>
+                <div><label>AI provider</label>
+                  <select name="lt_ai_provider" id="lt_ai_provider" onchange="toggleProviderKeys()">
+                    <option value="openrouter" {{ 'selected' if settings.lt_ai_provider=='openrouter' }}>OpenRouter</option>
+                    <option value="groq" {{ 'selected' if settings.lt_ai_provider=='groq' }}>Groq</option>
+                    <option value="gemini" {{ 'selected' if settings.lt_ai_provider=='gemini' }}>Gemini (Google AI Studio)</option>
+                  </select></div>
+                <div id="key_groq" style="display:none"><label>Groq API key</label>
+                  <input name="lt_groq_api_key" value="{{ settings.lt_groq_api_key }}"></div>
+                <div id="key_gemini" style="display:none"><label>Gemini API key</label>
+                  <input name="lt_gemini_api_key" value="{{ settings.lt_gemini_api_key }}"></div>
+              </div>
+              <div class="row">
+                <div><label>AI model (primary)</label>
+                  <input name="lt_openrouter_model" value="{{ settings.lt_openrouter_model }}"
+                         placeholder="leave blank for provider default"></div>
+                <div><label>AI model (fallback)</label>
+                  <input name="lt_openrouter_fallback" value="{{ settings.lt_openrouter_fallback }}"
+                         placeholder="leave blank for provider default"></div>
               </div>
               <div class="row">
                 <div><label>CallMeBot phone</label>
@@ -736,6 +750,13 @@
       });
     }
     refreshConn(); setInterval(refreshConn, 5000);
+
+    function toggleProviderKeys() {
+      var p = document.getElementById('lt_ai_provider').value;
+      document.getElementById('key_groq').style.display = (p === 'groq') ? '' : 'none';
+      document.getElementById('key_gemini').style.display = (p === 'gemini') ? '' : 'none';
+    }
+    toggleProviderKeys();
   </script>
 </body>
 </html>

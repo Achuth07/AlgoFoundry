@@ -1,17 +1,23 @@
 """AI research-synthesis leg (ALG-4).
 
-An OpenRouter chat-completions client that turns the structured leg summaries
+A multi-provider chat-completions client that turns the structured leg summaries
 plus raw news headlines into a compact, *traceable* news read: a small news
 score, a few key facts (each tied to an input headline), a materiality tag, and
 a boolean "this might warrant an override" flag. The model is explicitly told to
 synthesise, not to recommend — the BUY/SELL decision is made downstream in
 ``scoring.py``.
 
+Supported providers (all OpenAI-compatible chat-completions APIs):
+  * **OpenRouter** — aggregator with many free models
+  * **Groq** — fast LPU inference, generous free tier
+  * **Gemini** — Google AI Studio, Gemini Flash free tier
+
 Design notes
 ------------
-* The API key is read from the environment (``OPENROUTER_API``) or, if present,
-  the ``lt_openrouter_api_key`` setting. It is **never** logged or embedded in
-  any error message.
+* The active provider is chosen by the ``lt_ai_provider`` setting
+  (``openrouter`` | ``groq`` | ``gemini``).
+* API keys: each provider has its own DB setting + env-var fallback. Keys are
+  **never** logged or embedded in any error message.
 * Model selection: primary = ``lt_openrouter_model`` setting, fallback =
   ``lt_openrouter_fallback``. If the primary fails (HTTP 429/5xx, transport
   error, or invalid JSON after one corrective retry) we try the fallback once.
@@ -42,8 +48,49 @@ except Exception:  # pragma: no cover
 # Persisted alongside every verdict so we can attribute results to a prompt.
 PROMPT_VERSION = "1.0"
 
-_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _HTTP_TIMEOUT = 60
+
+# ---------------------------------------------------------------------------
+# Provider registry
+# ---------------------------------------------------------------------------
+# Each provider entry: (endpoint_url, db_key_setting, env_var, default_models,
+#                        extra_headers_fn | None)
+_PROVIDERS: dict[str, dict] = {
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "db_key": "lt_openrouter_api_key",
+        "env_key": "OPENROUTER_API",
+        "default_primary": "openrouter/free",
+        "default_fallback": "nvidia/nemotron-nano-9b-v2:free",
+        "extra_headers": {
+            "HTTP-Referer": "https://github.com/algofoundry",
+            "X-Title": "AlgoFoundry",
+        },
+    },
+    "groq": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "db_key": "lt_groq_api_key",
+        "env_key": "GROQ_API",
+        "default_primary": "llama-3.3-70b-versatile",
+        "default_fallback": "llama-3.1-8b-instant",
+        "extra_headers": {},
+    },
+    "gemini": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "db_key": "lt_gemini_api_key",
+        "env_key": "GEMINI_API",
+        "default_primary": "gemini-2.0-flash",
+        "default_fallback": "",
+        "auth_style": "x-goog",  # uses X-goog-api-key instead of Bearer
+        "extra_headers": {},
+    },
+}
+
+
+def _active_provider() -> str:
+    """Return the configured provider name, defaulting to 'openrouter'."""
+    p = (db.get_setting("lt_ai_provider", "openrouter") or "openrouter").strip().lower()
+    return p if p in _PROVIDERS else "openrouter"
 
 
 # ---------------------------------------------------------------------------
@@ -188,51 +235,54 @@ def build_messages(
 # ---------------------------------------------------------------------------
 # HTTP seam + key handling
 # ---------------------------------------------------------------------------
-def _get_api_key() -> str:
-    """Resolve the OpenRouter API key. Never logged.
+def _get_api_key(provider: str | None = None) -> str:
+    """Resolve the API key for the active (or given) provider. Never logged.
 
-    Preference order: ``lt_openrouter_api_key`` setting (if non-empty), then the
-    ``OPENROUTER_API`` environment variable.
+    Preference order: DB setting (if non-empty), then env var.
     """
+    prov = provider or _active_provider()
+    cfg = _PROVIDERS.get(prov, _PROVIDERS["openrouter"])
     try:
-        setting_key = db.get_setting("lt_openrouter_api_key", "") or ""
+        setting_key = db.get_setting(cfg["db_key"], "") or ""
     except Exception:
         setting_key = ""
     if setting_key:
         return str(setting_key)
-    return os.environ.get("OPENROUTER_API", "") or ""
+    return os.environ.get(cfg["env_key"], "") or ""
 
 
-def _post(payload: dict) -> dict:
-    """Single mockable HTTP seam. POSTs ``payload`` to OpenRouter and returns the
-    parsed JSON response dict.
+def _post(payload: dict, *, provider: str | None = None) -> dict:
+    """Single mockable HTTP seam. POSTs ``payload`` to the active provider and
+    returns the parsed JSON response dict.
 
-    Raises :class:`OpenRouterError` on transport failure or non-2xx status. The
+    Raises :class:`AIProviderError` on transport failure or non-2xx status. The
     API key is injected here from the Authorization header and is never logged.
     """
     if requests is None:  # pragma: no cover
-        raise OpenRouterError("the 'requests' package is not installed")
+        raise AIProviderError("the 'requests' package is not installed")
 
-    api_key = _get_api_key()
+    prov = provider or _active_provider()
+    cfg = _PROVIDERS.get(prov, _PROVIDERS["openrouter"])
+    api_key = _get_api_key(prov)
     if not api_key:
-        raise OpenRouterError(
-            "No OpenRouter API key found. Set the OPENROUTER_API environment "
-            "variable (or the lt_openrouter_api_key setting)."
+        raise AIProviderError(
+            f"No API key found for provider '{prov}'. Set the {cfg['env_key']} "
+            f"environment variable (or the {cfg['db_key']} setting)."
         )
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        # Optional OpenRouter attribution headers.
-        "HTTP-Referer": "https://github.com/algofoundry",
-        "X-Title": "AlgoFoundry",
-    }
+    headers = {"Content-Type": "application/json"}
+    if cfg.get("auth_style") == "x-goog":
+        headers["X-goog-api-key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    headers.update(cfg.get("extra_headers") or {})
+
     try:
         resp = requests.post(
-            _OPENROUTER_URL, headers=headers, json=payload, timeout=_HTTP_TIMEOUT
+            cfg["url"], headers=headers, json=payload, timeout=_HTTP_TIMEOUT
         )
     except Exception as exc:  # transport-level failure; never includes the key
-        raise OpenRouterError(f"request failed: {exc}") from exc
+        raise AIProviderError(f"request failed: {exc}") from exc
 
     if resp.status_code >= 400:
         # Do not surface headers (which carry the key); body is safe.
@@ -241,22 +291,26 @@ def _post(payload: dict) -> dict:
             body = resp.text[:500]
         except Exception:
             body = ""
-        raise OpenRouterError(
-            f"HTTP {resp.status_code} from OpenRouter: {body}",
+        raise AIProviderError(
+            f"HTTP {resp.status_code} from {prov}: {body}",
             status_code=resp.status_code,
         )
     try:
         return resp.json()
     except Exception as exc:
-        raise OpenRouterError(f"non-JSON HTTP body: {exc}") from exc
+        raise AIProviderError(f"non-JSON HTTP body: {exc}") from exc
 
 
-class OpenRouterError(Exception):
+class AIProviderError(Exception):
     """Raised for transport / HTTP / envelope errors from :func:`_post`."""
 
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+# Backwards compatibility alias.
+OpenRouterError = AIProviderError
 
 
 # ---------------------------------------------------------------------------
@@ -383,14 +437,22 @@ def analyze_holding(
     ``OpenRouterError`` only when *no* model is configured at all — a genuine
     misconfiguration the user must fix.
     """
+    provider = _active_provider()
+    cfg = _PROVIDERS.get(provider, _PROVIDERS["openrouter"])
+
     primary = (db.get_setting("lt_openrouter_model", "") or "").strip()
     fallback = (db.get_setting("lt_openrouter_fallback", "") or "").strip()
 
+    # If no models explicitly configured, use provider defaults.
     if not primary and not fallback:
-        raise OpenRouterError(
-            "No OpenRouter model configured. Run scripts/eval_models.py to pick "
-            "free models, then set lt_openrouter_model (and optionally "
-            "lt_openrouter_fallback) in the dashboard settings."
+        primary = cfg.get("default_primary", "")
+        fallback = cfg.get("default_fallback", "")
+
+    if not primary and not fallback:
+        raise AIProviderError(
+            f"No AI model configured for provider '{provider}'. Set "
+            "lt_openrouter_model (and optionally lt_openrouter_fallback) in the "
+            "dashboard settings."
         )
 
     messages = build_messages(
@@ -402,18 +464,18 @@ def analyze_holding(
     for model in models_to_try:
         try:
             content, parsed = _call_model(model, messages)
-        except OpenRouterError as exc:
-            last_detail = f"model {model}: {exc}"
+        except AIProviderError as exc:
+            last_detail = f"{provider}/{model}: {exc}"
             db.log_event(
                 "info", symbol=symbol, status="no_data",
-                detail=f"ai_research {model} http error: {exc}",
+                detail=f"ai_research {provider}/{model} http error: {exc}",
             )
             continue
         except ValueError as exc:
-            last_detail = f"model {model}: invalid JSON after retry: {exc}"
+            last_detail = f"{provider}/{model}: invalid JSON after retry: {exc}"
             db.log_event(
                 "info", symbol=symbol, status="no_data",
-                detail=f"ai_research {model} invalid JSON after retry",
+                detail=f"ai_research {provider}/{model} invalid JSON after retry",
             )
             continue
 
@@ -423,7 +485,7 @@ def analyze_holding(
             key_facts=parsed["key_facts"],
             materiality=parsed["materiality"],
             override_candidate=parsed["override_candidate"],
-            model_used=model,
+            model_used=f"{provider}/{model}",
             raw_response=content,
             detail=parsed.get("override_reason", ""),
         )

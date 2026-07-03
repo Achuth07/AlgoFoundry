@@ -44,6 +44,9 @@ DEFAULTS: dict[str, Any] = {
     "lt_alpha_vantage_key": "",
     "lt_callmebot_phone": "",
     "lt_callmebot_key": "",
+    "lt_ai_provider": "openrouter",     # openrouter | groq | gemini
+    "lt_groq_api_key": "",
+    "lt_gemini_api_key": "",
     "lt_openrouter_model": "",
     "lt_openrouter_fallback": "",
     "lt_weight_technical": 1.0,
