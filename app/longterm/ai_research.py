@@ -100,7 +100,7 @@ _PROVIDERS: dict[str, dict] = {
         "env_key": "GEMINI_API",
         "default_primary": "gemini-2.5-flash",
         "default_fallback": "gemini-3.5-flash",
-        "auth_style": "x-goog",  # uses X-goog-api-key instead of Bearer
+        # OpenAI-compat endpoint uses standard Bearer auth
         "extra_headers": {},
         "models": [
             ("gemini-2.5-flash", "Gemini 2.5 Flash"),
@@ -301,11 +301,10 @@ def _post(payload: dict, *, provider: str | None = None) -> dict:
             f"environment variable (or the {cfg['db_key']} setting)."
         )
 
-    headers = {"Content-Type": "application/json"}
-    if cfg.get("auth_style") == "x-goog":
-        headers["X-goog-api-key"] = api_key
-    else:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
     headers.update(cfg.get("extra_headers") or {})
 
     try:
