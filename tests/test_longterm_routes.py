@@ -11,6 +11,8 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import importlib
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -224,3 +226,86 @@ def test_longterm_settings_updates_key(client):
     assert db_mod.get_setting("lt_t212_api_secret") == "new-t212-secret"
     assert db_mod.get_setting("lt_t212_env") == "live"
     assert db_mod.get_setting("lt_schedule_time") == "09:15"
+
+
+# ---- manual run + auto-refresh polling -------------------------------------
+def test_run_status_idle_is_terminal_and_no_trigger(client):
+    """With no run ever started the fragment must not poll or fire a refresh."""
+    tc, _db, _main = client
+    resp = tc.get("/longterm/run-status", headers=_auth())
+    assert resp.status_code == 200
+    assert "hx-trigger=\"every 2s\"" not in resp.text
+    assert "HX-Trigger" not in resp.headers
+
+
+def test_run_returns_polling_fragment(client, monkeypatch):
+    """Run now returns a self-polling fragment while the pipeline is in flight."""
+    tc, _db, main_mod = client
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_pipeline(force=False):
+        started.set()
+        release.wait(timeout=5)
+        return {"processed": 3, "counts": {"BUY": 2, "HOLD": 1, "SELL": 0},
+                "errors": []}
+
+    import app.longterm.scheduler as sched
+    monkeypatch.setattr(sched, "run_daily_pipeline", slow_pipeline)
+
+    resp = tc.post("/longterm/run", headers=_auth())
+    assert resp.status_code == 200
+    assert 'hx-get="/longterm/run-status"' in resp.text
+    assert 'hx-trigger="every 2s"' in resp.text
+    assert started.wait(timeout=5)
+
+    # Mid-run the poll endpoint keeps polling and does not fire the refresh.
+    mid = tc.get("/longterm/run-status", headers=_auth())
+    assert 'hx-trigger="every 2s"' in mid.text
+    assert "in progress" in mid.text.lower()
+    assert "HX-Trigger" not in mid.headers
+
+    # A second click must not launch an overlapping pipeline.
+    dup = tc.post("/longterm/run", headers=_auth())
+    assert "in progress" in dup.text.lower()
+
+    release.set()
+    _wait_until(lambda: not main_mod._LT_RUN["running"])
+
+    # Terminal fragment: no polling, summary shown, refresh event fired.
+    done = tc.get("/longterm/run-status", headers=_auth())
+    assert 'hx-trigger="every 2s"' not in done.text
+    assert "Run complete" in done.text
+    assert "3 processed" in done.text
+    assert "2 BUY" in done.text
+    assert done.headers.get("HX-Trigger") == "ltRunDone"
+
+
+def test_run_failure_surfaces_and_still_triggers_refresh(client, monkeypatch):
+    tc, _db, main_mod = client
+
+    def boom(force=False):
+        raise RuntimeError("pipeline exploded")
+
+    import app.longterm.scheduler as sched
+    monkeypatch.setattr(sched, "run_daily_pipeline", boom)
+
+    tc.post("/longterm/run", headers=_auth())
+    _wait_until(lambda: not main_mod._LT_RUN["running"])
+
+    done = tc.get("/longterm/run-status", headers=_auth())
+    assert "Run failed" in done.text
+    assert "pipeline exploded" in done.text
+    assert 'hx-trigger="every 2s"' not in done.text
+    assert done.headers.get("HX-Trigger") == "ltRunDone"
+
+
+def _wait_until(pred, timeout: float = 5.0) -> None:
+    """Spin until ``pred()`` is true or the timeout expires."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition not met within timeout")

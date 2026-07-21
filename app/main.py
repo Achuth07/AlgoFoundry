@@ -380,21 +380,129 @@ def longterm(request: Request, _: str = Depends(require_login)) -> HTMLResponse:
     )
 
 
+# ---- Long-term manual run state -------------------------------------------
+# A manual "Run now" executes in a background thread; the browser polls
+# /longterm/run-status until it reports completion, then refreshes the table.
+# Guarded by a lock so concurrent clicks can't launch overlapping pipelines.
+_LT_RUN_LOCK = threading.Lock()
+_LT_RUN: dict[str, object] = {
+    "running": False,
+    "started_ts": None,
+    "finished_ts": None,
+    "summary": None,   # dict from run_daily_pipeline, or None
+    "error": None,     # str if the run raised
+}
+
+# HTMX fragment that re-polls itself every 2s. Swapping outerHTML means the
+# final (non-polling) fragment ends the poll loop naturally.
+_LT_POLL_ATTRS = (
+    'hx-get="/longterm/run-status" hx-trigger="every 2s" '
+    'hx-target="this" hx-swap="outerHTML"'
+)
+
+
+def _lt_run_status_fragment() -> HTMLResponse:
+    """Render the run-status span for the current state.
+
+    While a run is in flight the fragment keeps polling. Once finished it
+    returns a terminal fragment (no poll attributes) and sets ``HX-Trigger``
+    so the results table re-fetches itself.
+    """
+    with _LT_RUN_LOCK:
+        running = bool(_LT_RUN["running"])
+        started = _LT_RUN["started_ts"]
+        summary = _LT_RUN["summary"]
+        error = _LT_RUN["error"]
+
+    if running:
+        elapsed = int(time.time() - started) if started else 0
+        return HTMLResponse(
+            f'<span id="lt-run-status" class="mut" '
+            f'style="align-self:center;font-size:12px" {_LT_POLL_ATTRS}>'
+            f'Run in progress… {elapsed}s</span>'
+        )
+
+    if error:
+        body = f'Run failed: {error}'
+    elif summary and summary.get("error"):
+        body = f'Run failed: {summary["error"]}'
+    elif summary:
+        counts = summary.get("counts") or {}
+        body = (
+            f'Run complete — {summary.get("processed", 0)} processed, '
+            f'{counts.get("BUY", 0)} BUY / {counts.get("HOLD", 0)} HOLD / '
+            f'{counts.get("SELL", 0)} SELL.'
+        )
+    else:
+        body = ""
+
+    resp = HTMLResponse(
+        f'<span id="lt-run-status" class="mut" '
+        f'style="align-self:center;font-size:12px">{body}</span>'
+    )
+    if summary or error:
+        # Tell #longterm-body to re-fetch now that results are written.
+        resp.headers["HX-Trigger"] = "ltRunDone"
+    return resp
+
+
 @app.post("/longterm/run", response_class=HTMLResponse)
 def longterm_run(_: str = Depends(require_login)) -> HTMLResponse:
-    """Kick off a forced pipeline run in a background thread and return at once."""
+    """Kick off a forced pipeline run in a background thread and return at once.
+
+    Returns a self-polling status fragment; the browser drives
+    /longterm/run-status until the run finishes.
+    """
+    with _LT_RUN_LOCK:
+        if _LT_RUN["running"]:
+            # A run is already in flight — just resume polling it.
+            already_running = True
+        else:
+            already_running = False
+            _LT_RUN.update({
+                "running": True,
+                "started_ts": time.time(),
+                "finished_ts": None,
+                "summary": None,
+                "error": None,
+            })
+
+    if already_running:
+        return _lt_run_status_fragment()
+
     def _bg() -> None:
+        summary: dict | None = None
+        err: str | None = None
         try:
             from .longterm.scheduler import run_daily_pipeline
-            run_daily_pipeline(force=True)
+            summary = run_daily_pipeline(force=True)
         except Exception as exc:  # noqa: BLE001
-            db.log_event("error", action="lt_pipeline", detail=f"manual run failed: {exc}")
+            err = str(exc)
+            db.log_event(
+                "error", action="lt_pipeline", detail=f"manual run failed: {exc}"
+            )
+        finally:
+            with _LT_RUN_LOCK:
+                _LT_RUN.update({
+                    "running": False,
+                    "finished_ts": time.time(),
+                    "summary": summary,
+                    "error": err,
+                })
 
     threading.Thread(target=_bg, daemon=True).start()
     db.log_event("info", action="lt_pipeline", detail="manual run started")
     return HTMLResponse(
-        '<span class="mut">Run started — watch the Event Log for progress.</span>'
+        f'<span id="lt-run-status" class="mut" '
+        f'style="align-self:center;font-size:12px" {_LT_POLL_ATTRS}>'
+        f'Run started — this may take a couple of minutes…</span>'
     )
+
+
+@app.get("/longterm/run-status", response_class=HTMLResponse)
+def longterm_run_status(_: str = Depends(require_login)) -> HTMLResponse:
+    """Poll target for the manual-run status fragment."""
+    return _lt_run_status_fragment()
 
 
 @app.get("/longterm/history", response_class=HTMLResponse)

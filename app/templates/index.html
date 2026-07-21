@@ -547,9 +547,10 @@
           <div class="card">
             <h2>Portfolio verdicts</h2>
             <div class="btnrow" style="margin-top:0;margin-bottom:14px">
-              <button hx-post="/longterm/run" hx-target="#lt-run-status" hx-swap="innerHTML">Run now</button>
+              <button hx-post="/longterm/run" hx-target="#lt-run-status" hx-swap="outerHTML">Run now</button>
               <button class="ghost" hx-get="/longterm" hx-target="#longterm-body" hx-swap="innerHTML">Refresh</button>
-              <span id="lt-run-status" class="mut" style="align-self:center;font-size:12px"></span>
+              <span id="lt-run-status" class="mut" style="align-self:center;font-size:12px"
+                    hx-get="/longterm/run-status" hx-trigger="load" hx-target="this" hx-swap="outerHTML"></span>
             </div>
 
             <form hx-post="/longterm/analyze" hx-target="#lt-adhoc-result" hx-swap="innerHTML"
@@ -566,7 +567,7 @@
             </form>
             <div id="lt-adhoc-result"></div>
 
-            <div id="longterm-body" hx-get="/longterm" hx-trigger="load" style="margin-top:14px">Loading…</div>
+            <div id="longterm-body" hx-get="/longterm" hx-trigger="load, ltRunDone from:body" style="margin-top:14px">Loading…</div>
           </div>
         </div>
 
