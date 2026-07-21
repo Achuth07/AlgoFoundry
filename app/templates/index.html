@@ -385,7 +385,10 @@
       <!-- Long-Term sub-nav -->
       <div class="subnav" data-for="lt">
         <button class="navitem" aria-current="true" data-view="lt:analysis" onclick="showView('lt','analysis')">
-          <svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 15l5-5 4 3 7-8"/></svg> Analysis
+          <svg viewBox="0 0 24 24"><path d="M4 19V5"/><path d="M4 15l5-5 4 3 7-8"/></svg> Portfolio
+        </button>
+        <button class="navitem" data-view="lt:analyze" onclick="showView('lt','analyze')">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.35-4.35"/></svg> Analyze
         </button>
         <button class="navitem" data-view="lt:settings" onclick="showView('lt','settings')">
           <svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg> Settings
@@ -541,8 +544,8 @@
         <!-- Analysis / Portfolio -->
         <div class="view show" id="view-lt-analysis">
           <div class="view-head">
-            <h1>Long-term analysis</h1>
-            <p>Trading 212 portfolio verdicts and ad-hoc symbol scoring.</p>
+            <h1>Long-term portfolio</h1>
+            <p>Daily verdicts across your Trading 212 holdings.</p>
           </div>
           <div class="card">
             <h2>Portfolio verdicts</h2>
@@ -553,11 +556,23 @@
                     hx-get="/longterm/run-status" hx-trigger="load" hx-target="this" hx-swap="outerHTML"></span>
             </div>
 
+            <div id="longterm-body" hx-get="/longterm" hx-trigger="load, ltRunDone from:body" style="margin-top:14px">Loading…</div>
+          </div>
+        </div>
+
+        <!-- Analyze a symbol (ad-hoc scoring) -->
+        <div class="view" id="view-lt-analyze">
+          <div class="view-head">
+            <h1>Analyze a symbol</h1>
+            <p>Score any ticker on demand — it need not be in your portfolio.</p>
+          </div>
+          <div class="card">
+            <h2>Ad-hoc analysis</h2>
             <form hx-post="/longterm/analyze" hx-target="#lt-adhoc-result" hx-swap="innerHTML"
                   hx-indicator="#lt-adhoc-spin"
                   style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px">
               <div style="flex:1;min-width:180px">
-                <label style="margin-top:0">Analyze a symbol</label>
+                <label style="margin-top:0">Symbol</label>
                 <input name="symbol" placeholder="e.g. AAPL or VUAG.L" autocomplete="off" required>
               </div>
               <label class="switchrow" style="margin:0"><input type="checkbox" name="save" value="on">
@@ -565,9 +580,9 @@
               <button type="submit">Analyze</button>
               <span id="lt-adhoc-spin" class="htmx-indicator mut" style="align-self:center;font-size:12px">Analyzing…</span>
             </form>
-            <div id="lt-adhoc-result"></div>
-
-            <div id="longterm-body" hx-get="/longterm" hx-trigger="load, ltRunDone from:body" style="margin-top:14px">Loading…</div>
+            <p class="mut" style="font-size:12px;margin:0">Results are not saved to history unless
+              you tick <b>save to history</b>.</p>
+            <div id="lt-adhoc-result" style="margin-top:14px"></div>
           </div>
         </div>
 
@@ -687,7 +702,12 @@
 
     /* ---------------- primary section nav ---------------- */
     var SECTIONS = ['algo', 'lt'];
-    var SUBS = ['analysis', 'settings', 'logs'];
+    // Sub-views differ per section: Long-Term has its own "Analyze" page.
+    var SUBS_BY_SEC = {
+      algo: ['analysis', 'settings', 'logs'],
+      lt: ['analysis', 'analyze', 'settings', 'logs'],
+    };
+    function subsFor(sec) { return SUBS_BY_SEC[sec] || SUBS_BY_SEC.algo; }
     var LABEL = { algo: 'Algotrading', lt: 'Long-Term' };
     // Algotrading's first view is called "Trading" rather than "Analysis".
 
@@ -714,8 +734,9 @@
 
     /* ---------------- per-section sub-view nav ---------------- */
     function showView(sec, sub) {
-      if (SUBS.indexOf(sub) < 0) sub = 'analysis';
-      SUBS.forEach(function (v) {
+      var subs = subsFor(sec);
+      if (subs.indexOf(sub) < 0) sub = 'analysis';
+      subs.forEach(function (v) {
         var el = document.getElementById('view-' + sec + '-' + v);
         if (el) el.classList.toggle('show', v === sub);
       });
@@ -733,7 +754,7 @@
       SECTIONS.forEach(function (s) {
         var sub = 'analysis';
         try { sub = localStorage.getItem('af_view_' + s) || 'analysis'; } catch (e) {}
-        if (SUBS.indexOf(sub) < 0) sub = 'analysis';
+        if (subsFor(s).indexOf(sub) < 0) sub = 'analysis';
         showView(s, sub);
       });
       showSection(sec);

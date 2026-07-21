@@ -12,6 +12,7 @@ import base64
 import datetime as _dt
 import importlib
 import json
+import re
 import threading
 import time
 
@@ -300,6 +301,38 @@ def test_run_failure_surfaces_and_still_triggers_refresh(client, monkeypatch):
     assert "pipeline exploded" in done.text
     assert 'hx-trigger="every 2s"' not in done.text
     assert done.headers.get("HX-Trigger") == "ltRunDone"
+
+
+# ---- dashboard tab wiring --------------------------------------------------
+def test_lt_subnav_items_each_have_a_view(client):
+    """Every Long-Term sidebar item must map to a view div, else it blanks."""
+    tc, _db, _main = client
+    body = tc.get("/", headers=_auth()).text
+
+    navs = re.findall(r'data-view="(lt:[a-z]+)"', body)
+    views = set(re.findall(r'id="(view-lt-[a-z]+)"', body))
+    assert navs == ["lt:analysis", "lt:analyze", "lt:settings", "lt:logs"]
+    for nav in navs:
+        assert f"view-{nav.replace(':', '-')}" in views
+
+
+def test_adhoc_form_lives_in_analyze_view_only(client):
+    """The ad-hoc form moved out of the portfolio page into its own tab."""
+    tc, _db, _main = client
+    body = tc.get("/", headers=_auth()).text
+
+    assert body.count('hx-post="/longterm/analyze"') == 1
+    assert body.count('id="longterm-body"') == 1
+
+    analyze_at = body.index('id="view-lt-analyze"')
+    form_at = body.index('hx-post="/longterm/analyze"')
+    settings_at = body.index('id="view-lt-settings"')
+    portfolio_at = body.index('id="view-lt-analysis"')
+    table_at = body.index('id="longterm-body"')
+
+    # Form sits inside the analyze view; the verdict table inside the portfolio view.
+    assert analyze_at < form_at < settings_at
+    assert portfolio_at < table_at < analyze_at
 
 
 # ---- verdict "why" panel breakdown -----------------------------------------
