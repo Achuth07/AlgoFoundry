@@ -38,16 +38,84 @@
     <td class="mut" style="font-size:11px">{{ r.review_flags or '' }}</td>
     <td>
       {% if r.rationale %}
-      <details>
-        <summary class="mut" style="cursor:pointer;font-size:12px">why</summary>
-        <div class="mut" style="max-width:420px;margin-top:6px;font-size:12px">{{ r.rationale }}</div>
-        <a class="mut" style="font-size:11px" href="#"
-           hx-get="/longterm/history?symbol={{ r.symbol }}"
-           hx-target="#lt-history" hx-swap="innerHTML">view history →</a>
-      </details>
+      <a href="#" class="lt-why-toggle mut" style="font-size:12px;cursor:pointer"
+         data-target="lt-why-{{ loop.index }}"
+         onclick="event.preventDefault();
+                  var row=document.getElementById(this.dataset.target);
+                  var open=row.style.display==='table-row';
+                  row.style.display=open?'none':'table-row';
+                  this.textContent=open?'why':'hide';">why</a>
       {% endif %}
     </td>
   </tr>
+  {% if r.rationale %}
+  <tr id="lt-why-{{ loop.index }}" style="display:none">
+    <td colspan="11" style="padding:0">
+      {% set accent = 'var(--green-hi)' if r.label == 'BUY' else ('var(--red)' if r.label == 'SELL' else 'var(--line-hi)') %}
+      <div style="background:var(--card-hi);border-left:3px solid {{ accent }};
+                  padding:16px 20px;margin:0 0 4px">
+
+        {# ---- header: symbol, verdict, composite, confidence ---- #}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+          <b style="color:var(--txt);font-size:14px">{{ r.symbol }}</b>
+          {% if r.label == 'BUY' %}<span class="badge on">BUY</span>
+          {% elif r.label == 'SELL' %}<span class="badge off">SELL</span>
+          {% elif r.label %}<span class="badge amber" style="background:rgba(138,163,158,.14);color:var(--muted)">HOLD</span>
+          {% endif %}
+          <span class="mut" style="font-size:12px">
+            {% if r.composite is not none %}composite
+              <b style="color:{{ 'var(--green-hi)' if r.composite > 0 else ('var(--red)' if r.composite < 0 else 'var(--muted)') }}">{{ '%+.2f'|format(r.composite) }}</b>
+            {% endif %}
+            {% if r.confidence is not none %} · confidence {{ '%.0f%%'|format(r.confidence * 100) }}{% endif %}
+          </span>
+        </div>
+
+        {# ---- signal breakdown: one colored row per leg ---- #}
+        {% if r.detail.legs %}
+        <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+                    color:var(--faint);margin-bottom:8px">Signal breakdown</div>
+        <div style="display:grid;grid-template-columns:auto auto 1fr;gap:6px 16px;
+                    align-items:baseline;margin-bottom:16px;font-size:13px">
+          {% for leg in r.detail.legs %}
+            <div style="color:var(--muted)">{{ leg.label }}</div>
+            <div class="mono" style="text-align:right;font-weight:600;
+                 color:{{ 'var(--green-hi)' if leg.score > 0 else ('var(--red)' if leg.score < 0 else 'var(--muted)') }}">
+              {{ '%+.2f'|format(leg.score) }}</div>
+            <div class="mut" style="font-size:12px">{{ leg.detail }}</div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {# ---- news bullets ---- #}
+        {% if r.detail.news %}
+        <div style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+                    color:var(--faint);margin-bottom:8px">News</div>
+        <ul style="margin:0 0 16px;padding-left:18px;font-size:13px;line-height:1.65;color:var(--txt)">
+          {% for fact in r.detail.news %}
+          <li style="margin-bottom:5px">{{ fact }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+
+        {# ---- note / review flags ---- #}
+        {% if r.detail.note %}
+        <div style="font-size:12.5px;line-height:1.6;color:var(--amber);
+                    background:rgba(230,169,58,.10);border-radius:4px;
+                    padding:9px 12px;margin-bottom:14px">{{ r.detail.note }}</div>
+        {% endif %}
+
+        {# ---- fallback: raw rationale if nothing structured parsed ---- #}
+        {% if not r.detail.legs and not r.detail.news and r.rationale %}
+        <p style="margin:0 0 14px;font-size:13px;line-height:1.7;color:var(--txt)">{{ r.rationale }}</p>
+        {% endif %}
+
+        <a class="mut" style="font-size:11px" href="#"
+           hx-get="/longterm/history?symbol={{ r.symbol }}"
+           hx-target="#lt-history" hx-swap="innerHTML">view history →</a>
+      </div>
+    </td>
+  </tr>
+  {% endif %}
   {% endfor %}
 </table>
 <div id="lt-history" style="margin-top:16px"></div>

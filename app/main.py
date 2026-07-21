@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import base64
 import datetime as _dt
+import json
 import os
 import pathlib
+import re
 import secrets
 import threading
 import time
@@ -310,6 +312,63 @@ def api_regen_secret(_: str = Depends(require_login)) -> RedirectResponse:
 
 
 # ---- long-term portfolio tracker (ALG-9) -----------------------------------
+# Leg display names + the regex that recovers the parenthetical detail
+# (e.g. "trend +0.0, RSI 59") from the deterministic rationale text built by
+# app.longterm.scoring.render_rationale. Scores themselves come from the DB
+# columns, so only the human-readable detail is parsed.
+_LT_LEGS = (
+    ("technical", "Technical", "score_technical", r"Technicals\s[+-][\d.]+\s\(([^)]*)\)"),
+    ("fundamental", "Fundamental", "score_fundamental", r"Fundamentals\s[+-][\d.]+\s\(([^)]*)\)"),
+    ("analyst", "Analyst", "score_analyst", r"Analyst view\s[+-][\d.]+\s\(([^)]*)\)"),
+    ("news", "News", "score_news", None),
+)
+
+
+def _lt_verdict_detail(v: dict) -> dict:
+    """Break a verdict into structured parts for the expandable "why" panel.
+
+    Returns leg rows (name/score/detail), news bullets, and any note. News
+    bullets prefer the structured ``key_facts`` from the stored AI response
+    and fall back to parsing the rationale prose when that is unavailable.
+    """
+    rationale = v.get("rationale") or ""
+
+    legs: list[dict] = []
+    for _key, label, score_col, detail_re in _LT_LEGS:
+        score = v.get(score_col)
+        if score is None:
+            continue
+        detail = ""
+        if detail_re:
+            m = re.search(detail_re, rationale)
+            if m:
+                detail = m.group(1)
+        legs.append({"label": label, "score": score, "detail": detail})
+
+    # News bullets: structured source first.
+    facts: list[str] = []
+    raw = v.get("raw_ai_response")
+    if raw:
+        try:
+            payload = json.loads(raw)
+            facts = [
+                str(f).strip()
+                for f in (payload.get("key_facts") or [])
+                if str(f).strip()
+            ]
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            facts = []
+    if not facts and rationale:
+        facts = [m.strip() for m in re.findall(r"News:\s*(.+?)\.(?=\s|$)", rationale)]
+
+    note = ""
+    m = re.search(r"Note:\s*(.+?)$", rationale)
+    if m:
+        note = m.group(1).strip()
+
+    return {"legs": legs, "news": facts[:5], "note": note}
+
+
 def _lt_rows(snapshot: list[dict], verdicts_by_symbol: dict[str, dict]) -> list[dict]:
     """Join snapshot holdings with their latest verdict into template rows."""
     rows: list[dict] = []
@@ -336,6 +395,7 @@ def _lt_rows(snapshot: list[dict], verdicts_by_symbol: dict[str, dict]) -> list[
             "data_quality": v.get("data_quality"),
             "review_flags": v.get("review_flags"),
             "rationale": v.get("rationale"),
+            "detail": _lt_verdict_detail(v) if v else {"legs": [], "news": [], "note": ""},
             "legs_used_label": "legs: " + ", ".join(legs_used) if legs_used else "",
         })
     return rows

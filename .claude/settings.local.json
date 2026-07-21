@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__d33f6a2e-428e-4e29-b900-ee78714b07e9__get_project",
+      "mcp__d33f6a2e-428e-4e29-b900-ee78714b07e9__list_issues",
+      "Read(//Users/achuth/.claude/skills/ui-ux-pro-max/**)",
+      "Bash(python3 scripts/search.py \"algorithmic trading dashboard fintech dark emerald sophisticated data-dense\" --design-system --density 8 --variance 5 -p \"AlgoFoundry\")",
+      "Bash(python scripts/search.py \"algorithmic trading dashboard fintech dark emerald sophisticated data-dense\" --design-system --density 8 --variance 5 -p \"AlgoFoundry\")"
+    ]
+  }
+}

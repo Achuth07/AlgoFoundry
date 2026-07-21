@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import datetime as _dt
 import importlib
+import json
 import threading
 import time
 
@@ -299,6 +300,96 @@ def test_run_failure_surfaces_and_still_triggers_refresh(client, monkeypatch):
     assert "pipeline exploded" in done.text
     assert 'hx-trigger="every 2s"' not in done.text
     assert done.headers.get("HX-Trigger") == "ltRunDone"
+
+
+# ---- verdict "why" panel breakdown -----------------------------------------
+def test_verdict_detail_splits_legs_news_and_note(client):
+    """Rationale + stored AI payload decompose into structured panel parts."""
+    _tc, _db, main_mod = client
+    v = {
+        "rationale": (
+            "Verdict: BUY. Technicals +0.50 (trend +0.0, RSI 59). "
+            "Fundamentals +0.10 (fwd P/E 37.2, rev growth -31%). "
+            "Analyst view +0.92 (consensus +0.61). News read +2.00. "
+            "News: Coinbase stock jumped. "
+            "Note: a material event flags this for manual review."
+        ),
+        "score_technical": 0.5, "score_fundamental": 0.1,
+        "score_analyst": 0.92, "score_news": 2.0,
+        "raw_ai_response": json.dumps({
+            "key_facts": ["Fact one", "Fact two", "Fact three"],
+        }),
+    }
+    d = main_mod._lt_verdict_detail(v)
+
+    assert [leg["label"] for leg in d["legs"]] == [
+        "Technical", "Fundamental", "Analyst", "News",
+    ]
+    assert d["legs"][0]["score"] == 0.5
+    assert d["legs"][0]["detail"] == "trend +0.0, RSI 59"
+    assert d["legs"][1]["detail"] == "fwd P/E 37.2, rev growth -31%"
+    assert d["legs"][2]["detail"] == "consensus +0.61"
+    assert d["legs"][3]["detail"] == ""  # news leg has no parenthetical
+
+    # Structured key_facts win over the prose "News:" sentences.
+    assert d["news"] == ["Fact one", "Fact two", "Fact three"]
+    assert d["note"] == "a material event flags this for manual review."
+
+
+def test_verdict_detail_falls_back_to_prose_news(client):
+    """With no AI payload, news bullets come from the rationale sentences."""
+    _tc, _db, main_mod = client
+    v = {
+        "rationale": (
+            "Verdict: HOLD. Technicals +0.00 (trend +0.0, RSI 49). "
+            "News: Alpha happened. News: Beta happened."
+        ),
+        "score_technical": 0.0,
+        "raw_ai_response": None,
+    }
+    d = main_mod._lt_verdict_detail(v)
+    assert [leg["label"] for leg in d["legs"]] == ["Technical"]
+    assert d["news"] == ["Alpha happened", "Beta happened"]
+    assert d["note"] == ""
+
+
+def test_verdict_detail_handles_missing_and_malformed(client):
+    """Absent legs are skipped; bad JSON must not raise."""
+    _tc, _db, main_mod = client
+    assert main_mod._lt_verdict_detail({}) == {"legs": [], "news": [], "note": ""}
+
+    d = main_mod._lt_verdict_detail(
+        {"rationale": "Verdict: HOLD.", "score_news": -1.0,
+         "raw_ai_response": "{not valid json"}
+    )
+    assert [leg["label"] for leg in d["legs"]] == ["News"]
+    assert d["legs"][0]["score"] == -1.0
+    assert d["news"] == []
+
+
+def test_why_panel_renders_bullets_and_colors(client, monkeypatch):
+    """The expanded row renders as a full-width structured panel."""
+    tc, db_mod, _main = client
+    today = _dt.date.today().isoformat()
+    db_mod.upsert_holdings_snapshot(
+        date=today, t212_ticker="COIN_US_EQ", symbol="COIN", qty=1.0,
+        avg_price=100.0, current_price=120.0, pnl=20.0, currency="USD",
+    )
+    db_mod.upsert_verdict(
+        date=today, symbol="COIN", composite=0.88, label="BUY", confidence=0.44,
+        score_technical=0.5, score_news=2.0, data_quality="full",
+        review_flags="manual_review",
+        rationale=("Verdict: BUY. Technicals +0.50 (trend +0.0, RSI 59). "
+                   "News read +2.00. Note: flagged for manual review."),
+        raw_ai_response=json.dumps({"key_facts": ["Bullet A", "Bullet B"]}),
+    )
+
+    body = tc.get("/longterm", headers=_auth()).text
+    assert 'colspan="11"' in body          # full-width panel row
+    assert "Signal breakdown" in body
+    assert "<li" in body and "Bullet A" in body and "Bullet B" in body
+    assert "var(--green-hi)" in body       # BUY accent / positive scores
+    assert "flagged for manual review." in body
 
 
 def _wait_until(pred, timeout: float = 5.0) -> None:

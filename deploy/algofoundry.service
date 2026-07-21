@@ -1,0 +1,24 @@
+[Unit]
+Description=AlgoFoundry Trading Bridge
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=algofoundry
+Group=algofoundry
+WorkingDirectory=/opt/algofoundry
+EnvironmentFile=/opt/algofoundry/.env
+ExecStart=/opt/algofoundry/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/algofoundry
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
