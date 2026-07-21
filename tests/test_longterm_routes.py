@@ -212,6 +212,7 @@ def test_longterm_settings_updates_key(client):
         headers=_auth(),
         data={
             "lt_t212_api_key": "new-t212-key",
+            "lt_t212_api_secret": "new-t212-secret",
             "lt_t212_env": "live",
             "lt_finnhub_key": "fh-key",
             "lt_schedule_time": "09:15",
@@ -220,5 +221,6 @@ def test_longterm_settings_updates_key(client):
     )
     assert resp.status_code == 303
     assert db_mod.get_setting("lt_t212_api_key") == "new-t212-key"
+    assert db_mod.get_setting("lt_t212_api_secret") == "new-t212-secret"
     assert db_mod.get_setting("lt_t212_env") == "live"
     assert db_mod.get_setting("lt_schedule_time") == "09:15"

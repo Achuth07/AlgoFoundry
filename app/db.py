@@ -39,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
     # Config for the long-term feature reuses this settings table; it never
     # touches the swing-trading keys above.
     "lt_t212_api_key": "",
+    "lt_t212_api_secret": "",         # paired with lt_t212_api_key (Basic auth)
     "lt_t212_env": "demo",            # demo | live
     "lt_finnhub_key": "",
     "lt_alpha_vantage_key": "",

@@ -2,12 +2,14 @@
 
 No real network calls: the module's single HTTP seam (``t212._get`` /
 ``urllib.request.urlopen``) is monkeypatched. Covers portfolio normalization,
-auth failure surfacing (no key leakage), 429-then-success retry, demo/live
-base-URL selection, and sync_instruments enrichment.
+auth failure surfacing (no key/secret leakage), 429-then-success retry,
+demo/live base-URL selection, Basic-auth header construction, and
+sync_instruments enrichment.
 """
 
 from __future__ import annotations
 
+import base64
 import importlib
 import io
 import json
@@ -54,9 +56,11 @@ SAMPLE_PORTFOLIO = [
 
 def test_fetch_portfolio_normalizes(t212, monkeypatch):
     monkeypatch.setattr(t212, "_get", lambda path, **kw: SAMPLE_PORTFOLIO)
-    # Provide a key so _get's guard (if reached) is satisfied; _get is mocked
-    # here but keep the setting realistic.
-    holdings = t212.fetch_portfolio(api_key="secret-key", env="demo")
+    # Provide a key/secret so _get's guard (if reached) is satisfied; _get is
+    # mocked here but keep the settings realistic.
+    holdings = t212.fetch_portfolio(
+        api_key="my-key", api_secret="my-secret", env="demo"
+    )
 
     assert len(holdings) == 2
     aapl = holdings[0]
@@ -79,7 +83,7 @@ def test_fetch_portfolio_normalizes(t212, monkeypatch):
 
 def test_fetch_portfolio_handles_empty(t212, monkeypatch):
     monkeypatch.setattr(t212, "_get", lambda path, **kw: None)
-    assert t212.fetch_portfolio(api_key="k") == []
+    assert t212.fetch_portfolio(api_key="k", api_secret="s") == []
 
 
 # ---- Auth failure surfacing -----------------------------------------------
@@ -87,12 +91,20 @@ def test_fetch_portfolio_handles_empty(t212, monkeypatch):
 
 def test_missing_key_raises_without_leak(t212):
     with pytest.raises(t212.T212Error) as exc:
-        t212._get("/api/v0/equity/portfolio", api_key="")
+        t212._get("/api/v0/equity/portfolio", api_key="", api_secret="s")
     msg = str(exc.value)
-    assert "check API key / environment" in msg
+    assert "check API key / secret / environment" in msg
+
+
+def test_missing_secret_raises_without_leak(t212):
+    with pytest.raises(t212.T212Error) as exc:
+        t212._get("/api/v0/equity/portfolio", api_key="k", api_secret="")
+    msg = str(exc.value)
+    assert "check API key / secret / environment" in msg
 
 
 def test_401_raises_t212error_no_key_leak(t212, monkeypatch):
+    KEY = "my-api-key-id"
     SECRET = "super-secret-key-123"
 
     def fake_urlopen(req, timeout=None):
@@ -103,19 +115,22 @@ def test_401_raises_t212error_no_key_leak(t212, monkeypatch):
     monkeypatch.setattr(t212.urllib.request, "urlopen", fake_urlopen)
 
     with pytest.raises(t212.T212Error) as exc:
-        t212.fetch_portfolio(api_key=SECRET, env="demo")
+        t212.fetch_portfolio(api_key=KEY, api_secret=SECRET, env="demo")
 
     msg = str(exc.value)
-    assert "check API key / environment" in msg
-    assert SECRET not in msg  # never leak the key
+    assert "check API key / secret / environment" in msg
+    assert KEY not in msg  # never leak the key
+    assert SECRET not in msg  # never leak the secret
 
-    # Error should have been logged, also without the key.
+    # Error should have been logged, also without the key/secret.
     events = t212.db.recent_events(5)
     assert any(
         e["kind"] == "error" and e["action"] == "t212_fetch" for e in events
     )
     for e in events:
-        assert SECRET not in (e.get("detail") or "")
+        detail = e.get("detail") or ""
+        assert KEY not in detail
+        assert SECRET not in detail
 
 
 def test_403_raises_t212error(t212, monkeypatch):
@@ -126,8 +141,8 @@ def test_403_raises_t212error(t212, monkeypatch):
 
     monkeypatch.setattr(t212.urllib.request, "urlopen", fake_urlopen)
     with pytest.raises(t212.T212Error) as exc:
-        t212._get("/api/v0/equity/portfolio", api_key="k")
-    assert "check API key / environment" in str(exc.value)
+        t212._get("/api/v0/equity/portfolio", api_key="k", api_secret="s")
+    assert "check API key / secret / environment" in str(exc.value)
 
 
 # ---- Retry on 429 then success --------------------------------------------
@@ -148,7 +163,7 @@ def test_429_then_success_retries(t212, monkeypatch):
     monkeypatch.setattr(t212.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(t212.time, "sleep", lambda *_a, **_k: None)
 
-    holdings = t212.fetch_portfolio(api_key="k", env="demo")
+    holdings = t212.fetch_portfolio(api_key="k", api_secret="s", env="demo")
     assert calls["n"] == 2
     assert len(holdings) == 2
 
@@ -167,7 +182,7 @@ def test_5xx_exhausts_retries_and_raises(t212, monkeypatch):
     monkeypatch.setattr(t212.time, "sleep", lambda *_a, **_k: None)
 
     with pytest.raises(t212.T212Error) as exc:
-        t212._get("/api/v0/equity/portfolio", api_key="k")
+        t212._get("/api/v0/equity/portfolio", api_key="k", api_secret="s")
     assert calls["n"] == t212._MAX_TRIES
     assert "HTTP 503" in str(exc.value)
 
@@ -197,11 +212,13 @@ def test_get_targets_selected_env_url(t212, monkeypatch):
         return _FakeResp(b"[]")
 
     monkeypatch.setattr(t212.urllib.request, "urlopen", fake_urlopen)
-    t212._get("/api/v0/equity/portfolio", api_key="k", env="live")
+    t212._get(
+        "/api/v0/equity/portfolio", api_key="k", api_secret="s", env="live"
+    )
     assert seen["url"].startswith("https://live.trading212.com")
 
 
-def test_auth_header_uses_raw_key_no_bearer(t212, monkeypatch):
+def test_auth_header_uses_basic_auth_key_secret_pair(t212, monkeypatch):
     seen = {}
 
     def fake_urlopen(req, timeout=None):
@@ -209,8 +226,19 @@ def test_auth_header_uses_raw_key_no_bearer(t212, monkeypatch):
         return _FakeResp(b"[]")
 
     monkeypatch.setattr(t212.urllib.request, "urlopen", fake_urlopen)
-    t212._get("/api/v0/equity/portfolio", api_key="raw-key-xyz", env="demo")
-    assert seen["auth"] == "raw-key-xyz"  # no "Bearer " prefix
+    t212._get(
+        "/api/v0/equity/portfolio",
+        api_key="raw-key-xyz",
+        api_secret="raw-secret-abc",
+        env="demo",
+    )
+    expected_token = base64.b64encode(b"raw-key-xyz:raw-secret-abc").decode("ascii")
+    assert seen["auth"] == f"Basic {expected_token}"
+
+
+def test_basic_auth_header_helper(t212):
+    token = base64.b64encode(b"key1:secret1").decode("ascii")
+    assert t212._basic_auth_header("key1", "secret1") == f"Basic {token}"
 
 
 # ---- sync_instruments ------------------------------------------------------
@@ -232,7 +260,7 @@ def test_sync_instruments_calls_enrich(t212, monkeypatch):
 
     monkeypatch.setattr(t212.instruments, "enrich_from_t212", spy_enrich)
 
-    count = t212.sync_instruments(api_key="k", env="demo")
+    count = t212.sync_instruments(api_key="k", api_secret="s", env="demo")
     assert captured["payload"] == payload
     assert count == 2
     # Enrichment actually persisted.

@@ -483,6 +483,7 @@ def longterm_analyze(
 def longterm_settings(
     _: str = Depends(require_login),
     lt_t212_api_key: str = Form(""),
+    lt_t212_api_secret: str = Form(""),
     lt_t212_env: str = Form("demo"),
     lt_finnhub_key: str = Form(""),
     lt_alpha_vantage_key: str = Form(""),
@@ -503,6 +504,7 @@ def longterm_settings(
 ) -> RedirectResponse:
     db.update_settings({
         "lt_t212_api_key": lt_t212_api_key,
+        "lt_t212_api_secret": lt_t212_api_secret,
         "lt_t212_env": lt_t212_env,
         "lt_finnhub_key": lt_finnhub_key,
         "lt_alpha_vantage_key": lt_alpha_vantage_key,

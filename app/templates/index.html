@@ -582,6 +582,8 @@
               <div class="row">
                 <div><label>Trading 212 API key</label>
                   <input name="lt_t212_api_key" value="{{ settings.lt_t212_api_key }}"></div>
+                <div><label>Trading 212 API secret</label>
+                  <input type="password" name="lt_t212_api_secret" value="{{ settings.lt_t212_api_secret }}" autocomplete="off"></div>
                 <div><label>Trading 212 environment</label>
                   <select name="lt_t212_env">
                     <option value="demo" {{ 'selected' if settings.lt_t212_env=='demo' }}>demo</option>

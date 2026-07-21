@@ -1,8 +1,9 @@
 """Trading 212 REST API client (long-term portfolio tracker).
 
 Thin, dependency-free client over the Trading 212 public API. It reads its
-API key and environment (demo/live) from the settings table in :mod:`app.db`
-and exposes two read-only endpoints used by the long-term feature:
+API key/secret pair and environment (demo/live) from the settings table in
+:mod:`app.db` and exposes two read-only endpoints used by the long-term
+feature:
 
 * :func:`fetch_portfolio`  -> ``/api/v0/equity/portfolio``
 * :func:`fetch_instruments_metadata` -> ``/api/v0/equity/metadata/instruments``
@@ -16,11 +17,15 @@ Design notes
   instruments metadata ~1 req/50s) via module-level timestamps.
 * Exponential backoff with a small retry budget on 429 / 5xx, honoring the
   ``Retry-After`` header when present.
-* The API key is NEVER written to a log event or an exception message.
+* Auth: T212 issues an API Key + API Secret pair. They are sent as HTTP
+  Basic auth (``base64("KEY:SECRET")``) — the key is the "username", the
+  secret is the "password". Neither is ever written to a log event or an
+  exception message.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import urllib.error
@@ -96,6 +101,21 @@ def _api_key(api_key: str | None = None) -> str:
     return (key or "").strip()
 
 
+def _api_secret(api_secret: str | None = None) -> str:
+    secret = (
+        api_secret
+        if api_secret is not None
+        else db.get_setting("lt_t212_api_secret", "")
+    )
+    return (secret or "").strip()
+
+
+def _basic_auth_header(key: str, secret: str) -> str:
+    """Build the ``Authorization: Basic ...`` header value for a key/secret pair."""
+    token = base64.b64encode(f"{key}:{secret}".encode("utf-8")).decode("ascii")
+    return f"Basic {token}"
+
+
 # ---- HTTP seam -------------------------------------------------------------
 
 
@@ -121,7 +141,13 @@ def _parse_retry_after(value: str | None) -> float | None:
         return None
 
 
-def _get(path: str, *, api_key: str | None = None, env: str | None = None):
+def _get(
+    path: str,
+    *,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    env: str | None = None,
+):
     """GET ``path`` against the selected T212 environment and return decoded
     JSON.
 
@@ -131,9 +157,11 @@ def _get(path: str, *, api_key: str | None = None, env: str | None = None):
     failures onto :class:`T212Error` with key-free messages.
     """
     key = _api_key(api_key)
-    if not key:
+    secret = _api_secret(api_secret)
+    if not key or not secret:
         raise T212Error(
-            "Trading 212 API key is not configured — check API key / environment"
+            "Trading 212 API key/secret is not configured — check API key / "
+            "secret / environment"
         )
 
     url = _base_url(env) + path
@@ -141,8 +169,8 @@ def _get(path: str, *, api_key: str | None = None, env: str | None = None):
         url,
         method="GET",
         headers={
-            # T212 public API uses the raw key with no "Bearer" prefix.
-            "Authorization": key,
+            # T212 public API pairs a key + secret, sent as HTTP Basic auth.
+            "Authorization": _basic_auth_header(key, secret),
             "Accept": "application/json",
         },
     )
@@ -159,10 +187,10 @@ def _get(path: str, *, api_key: str | None = None, env: str | None = None):
             _LAST_CALL[path] = time.monotonic()
             code = exc.code
             if code in (401, 403):
-                # Permanent auth failure — do not retry, never leak the key.
+                # Permanent auth failure — do not retry, never leak the key/secret.
                 raise T212Error(
                     f"Trading 212 authentication failed (HTTP {code}) — "
-                    "check API key / environment"
+                    "check API key / secret / environment"
                 ) from None
             if code == 429 or 500 <= code < 600:
                 last_exc = exc
@@ -243,16 +271,22 @@ def _normalize_holding(item: dict) -> Holding:
 
 
 def fetch_portfolio(
-    *, api_key: str | None = None, env: str | None = None
+    *,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    env: str | None = None,
 ) -> list[Holding]:
     """Fetch open positions and return them as normalized :class:`Holding` rows.
 
-    On failure logs an ``error`` event (without the API key) and re-raises
-    :class:`T212Error`.
+    On failure logs an ``error`` event (without the API key/secret) and
+    re-raises :class:`T212Error`.
     """
     try:
         data = _get(
-            "/api/v0/equity/portfolio", api_key=api_key, env=env
+            "/api/v0/equity/portfolio",
+            api_key=api_key,
+            api_secret=api_secret,
+            env=env,
         )
     except T212Error as exc:
         db.log_event(
@@ -264,7 +298,10 @@ def fetch_portfolio(
 
 
 def fetch_instruments_metadata(
-    *, api_key: str | None = None, env: str | None = None
+    *,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    env: str | None = None,
 ) -> list[dict]:
     """Fetch the full instruments metadata list (large payload).
 
@@ -272,7 +309,10 @@ def fetch_instruments_metadata(
     """
     try:
         data = _get(
-            "/api/v0/equity/metadata/instruments", api_key=api_key, env=env
+            "/api/v0/equity/metadata/instruments",
+            api_key=api_key,
+            api_secret=api_secret,
+            env=env,
         )
     except T212Error as exc:
         db.log_event(
@@ -282,11 +322,18 @@ def fetch_instruments_metadata(
     return data or []
 
 
-def sync_instruments(*, api_key: str | None = None, env: str | None = None) -> int:
+def sync_instruments(
+    *,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    env: str | None = None,
+) -> int:
     """Fetch instruments metadata and enrich the instrument cache.
 
     Returns the number of instrument rows written by
     :func:`app.longterm.instruments.enrich_from_t212`.
     """
-    payload = fetch_instruments_metadata(api_key=api_key, env=env)
+    payload = fetch_instruments_metadata(
+        api_key=api_key, api_secret=api_secret, env=env
+    )
     return instruments.enrich_from_t212(payload)
