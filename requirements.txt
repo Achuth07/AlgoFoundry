@@ -8,3 +8,4 @@ yfinance>=0.2
 pandas>=2
 requests>=2.31
 apscheduler>=3.10
+psycopg2-binary>=2.9
