@@ -27,15 +27,20 @@
     <td class="mono num">{{ '%+.2f'|format(r.composite) if r.composite is not none else '—' }}</td>
     <td class="mono num">{{ '%.0f%%'|format((r.confidence or 0) * 100) if r.confidence is not none else '' }}</td>
     <td>
-      {% if r.data_quality == 'no_data' %}
-        <span class="badge off">NO_DATA</span>
-      {% elif r.data_quality == 'partial_data' %}
-        <span class="badge amber" title="{{ r.legs_used_label or 'partial data' }}">partial</span>
-      {% elif r.data_quality %}
-        <span class="mut">full</span>
+      {% if r.data_quality_badge %}
+        <span class="badge sm {{ r.data_quality_badge.tone }}"
+              title="{{ r.data_quality_badge.title }}{% if r.data_quality == 'partial_data' and r.legs_used_label %} · {{ r.legs_used_label }}{% endif %}">{{ r.data_quality_badge.label }}</span>
       {% endif %}
     </td>
-    <td class="mut" style="font-size:11px">{{ r.review_flags or '' }}</td>
+    <td>
+      {% if r.flag_chips %}
+      <div class="flagcell">
+        {% for chip in r.flag_chips %}
+        <span class="badge sm {{ chip.tone }}" title="{{ chip.title }}">{{ chip.label }}</span>
+        {% endfor %}
+      </div>
+      {% else %}<span class="mut">—</span>{% endif %}
+    </td>
     <td>
       {% if r.rationale %}
       <a href="#" class="lt-why-toggle mut" style="font-size:12px;cursor:pointer"

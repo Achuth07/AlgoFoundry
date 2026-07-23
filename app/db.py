@@ -538,6 +538,34 @@ def get_holdings_snapshot(date: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def latest_snapshot_date() -> str | None:
+    """Return the most recent date in the holdings snapshot table, or ``None``.
+
+    Used by the long-term view to fall back to the last run when there's no
+    snapshot for today.
+    """
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT date FROM longterm_holdings_snapshot "
+                    "ORDER BY date DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
+        return row[0] if row else None
+    else:
+        with _lock, _conn_sqlite() as conn:
+            row = conn.execute(
+                "SELECT date FROM longterm_holdings_snapshot "
+                "ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+        return row["date"] if row else None
+
+
 def upsert_verdict(*, date: str, symbol: str, **fields: Any) -> None:
     allowed = {
         "score_technical", "score_fundamental", "score_analyst", "score_news",

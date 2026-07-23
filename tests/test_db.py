@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def _table_names(db):
-    with db._conn() as conn:
+    with db._conn_sqlite() as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()

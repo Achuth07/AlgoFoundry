@@ -108,7 +108,7 @@ def test_fetch_stale_cache_refreshes(fund, db, monkeypatch):
     # Seed a stale cache entry (fetched 8 days ago).
     import time
     db.set_fundamentals_cache("AAPL", {"trailing_pe": 99.0})
-    with db._conn() as conn:
+    with db._conn_sqlite() as conn:
         conn.execute(
             "UPDATE longterm_fundamentals_cache SET fetched_ts=? WHERE symbol=?",
             (time.time() - 8 * 24 * 3600, "AAPL"),
@@ -123,7 +123,7 @@ def test_fetch_stale_cache_refreshes(fund, db, monkeypatch):
 def test_fetch_falls_back_to_stale_on_error(fund, db, monkeypatch):
     import time
     db.set_fundamentals_cache("AAPL", {"trailing_pe": 42.0})
-    with db._conn() as conn:
+    with db._conn_sqlite() as conn:
         conn.execute(
             "UPDATE longterm_fundamentals_cache SET fetched_ts=? WHERE symbol=?",
             (time.time() - 8 * 24 * 3600, "AAPL"),

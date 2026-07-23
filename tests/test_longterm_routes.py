@@ -72,7 +72,7 @@ def test_longterm_renders_rows(client):
     body = resp.text
     assert "AAPL" in body
     assert "BUY" in body
-    assert "partial" in body  # data_quality badge
+    assert ">Partial<" in body  # data_quality badge (pill label)
 
 
 def test_longterm_empty_state(client):
@@ -333,6 +333,59 @@ def test_adhoc_form_lives_in_analyze_view_only(client):
     # Form sits inside the analyze view; the verdict table inside the portfolio view.
     assert analyze_at < form_at < settings_at
     assert portfolio_at < table_at < analyze_at
+
+
+# ---- data-quality badge + flag chips ---------------------------------------
+def test_data_quality_badge_maps_all_states(client):
+    _tc, _db, main_mod = client
+    assert main_mod._lt_data_quality_badge("full")["tone"] == "on"
+    assert main_mod._lt_data_quality_badge("full")["label"] == "Full"
+    assert main_mod._lt_data_quality_badge("partial_data")["tone"] == "amber"
+    assert main_mod._lt_data_quality_badge("no_data")["tone"] == "off"
+    assert main_mod._lt_data_quality_badge(None) is None
+    # Unknown value degrades gracefully rather than raising.
+    assert main_mod._lt_data_quality_badge("weird")["tone"] == "neutral"
+
+
+def test_flag_chips_are_readable_with_tooltips(client):
+    _tc, _db, main_mod = client
+    chips = main_mod._lt_flag_chips("high_divergence,manual_review")
+    assert [c["label"] for c in chips] == ["Signals diverge", "Review"]
+    assert all(c["tone"] == "amber" for c in chips)
+    # Tooltip carries the full plain-English phrase.
+    assert "manual review" in chips[1]["title"]
+
+    assert main_mod._lt_flag_chips("") == []
+    assert main_mod._lt_flag_chips(None) == []
+
+    # Unknown flag: humanized label, neutral tone, no crash.
+    odd = main_mod._lt_flag_chips("adhoc,some_new_flag")
+    assert odd[0]["label"] == "Ad-hoc"
+    assert odd[1]["label"] == "some new flag"
+
+
+def test_verdict_table_renders_full_pill_and_flag_chips(client):
+    tc, db_mod, _main = client
+    today = _dt.date.today().isoformat()
+    db_mod.upsert_holdings_snapshot(
+        date=today, t212_ticker="AAPL_US_EQ", symbol="AAPL", qty=1.0,
+        avg_price=100.0, current_price=110.0, pnl=10.0, currency="USD",
+    )
+    db_mod.upsert_verdict(
+        date=today, symbol="AAPL", composite=0.5, label="BUY", confidence=0.4,
+        score_technical=1.0, score_fundamental=0.5, score_analyst=0.5,
+        score_news=1.0, data_quality="full",
+        review_flags="high_divergence,manual_review",
+        rationale="Verdict: BUY.",
+    )
+    body = tc.get("/longterm", headers=_auth()).text
+
+    # "Full" is now a green pill, not plain muted text.
+    assert 'class="badge sm on"' in body and ">Full<" in body
+    assert ">NO_DATA<" not in body  # legacy raw labels gone
+    # Flags are readable chips, not the raw comma string.
+    assert "high_divergence,manual_review" not in body
+    assert ">Signals diverge<" in body and ">Review<" in body
 
 
 # ---- verdict "why" panel breakdown -----------------------------------------

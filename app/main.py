@@ -468,15 +468,10 @@ def longterm(request: Request, _: str = Depends(require_login)) -> HTMLResponse:
     snapshot = db.get_holdings_snapshot(today)
     snapshot_date = today
     if not snapshot:
-        recent = db.recent_verdicts(1)
-        # Fall back to the most recent snapshot date by scanning verdicts.
-        with db._lock, db._conn() as conn:  # noqa: SLF001
-            row = conn.execute(
-                "SELECT date FROM longterm_holdings_snapshot "
-                "ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-        snapshot_date = row["date"] if row else today
-        snapshot = db.get_holdings_snapshot(snapshot_date) if row else []
+        # Fall back to the most recent snapshot date on record.
+        latest = db.latest_snapshot_date()
+        snapshot_date = latest or today
+        snapshot = db.get_holdings_snapshot(snapshot_date) if latest else []
 
     verdicts = db.get_verdicts_for_date(snapshot_date)
     verdict_date = snapshot_date
