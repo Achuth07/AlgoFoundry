@@ -7,7 +7,12 @@ Three concerns live here:
   imported by the other leg modules.
 * Price history (ALG-2) — :func:`fetch_ohlcv` pulls OHLCV bars from yfinance
   with retry/backoff and a same-day on-disk cache so reruns are network-free.
-  Alpha Vantage (TIME_SERIES_DAILY) is used as a fallback when yfinance fails.
+  When yfinance fails it falls through additional sources in order: Alpha
+  Vantage (TIME_SERIES_DAILY), Stooq (keyless EOD CSV), then Massive
+  (formerly Polygon.io — daily aggregates, if an API key is set). These are
+  *additional* fallbacks —
+  they never override a successful yfinance fetch — and they broaden coverage
+  of share classes (e.g. MOG-A) and tickers yfinance is missing.
 * Analyst + news + earnings (ALG-3) — thin Finnhub free-tier wrappers behind a
   single mockable ``_finnhub_get`` HTTP seam, plus their scoring rubric.
   Alpha Vantage NEWS_SENTIMENT is used as a fallback when Finnhub is unavailable.
@@ -23,6 +28,7 @@ Design principle: a leg never fabricates a neutral ``0`` on failure. The
 from __future__ import annotations
 
 import datetime as _dt
+import io
 import os
 import pickle
 import time
@@ -54,6 +60,36 @@ except Exception:  # pragma: no cover
 # Alpha Vantage shared helpers
 # ---------------------------------------------------------------------------
 _AV_BASE = "https://www.alphavantage.co/query"
+_STOOQ_BASE = "https://stooq.com/q/d/l/"
+# Polygon.io rebranded to Massive (massive.com) on 2025-10-30. The API is
+# unchanged and fully backward-compatible, and both hosts run in parallel during
+# the migration window, so we hit the new host first and fall back to the legacy
+# one if it ever fails to resolve.
+_MASSIVE_BASE = "https://api.massive.com"
+_POLYGON_BASE = "https://api.polygon.io"
+_MASSIVE_HOSTS = (_MASSIVE_BASE, _POLYGON_BASE)
+
+# Shared mapping from a yfinance-style ``period`` string to a day count. Used to
+# trim provider payloads to the requested window so every OHLCV source returns a
+# comparable frame.
+_PERIOD_DAYS: dict[str, int] = {
+    "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730,
+    "5y": 1825, "10y": 3650, "max": 99999,
+}
+
+# yfinance exchange suffixes that mark a non-US listing. The US-only fallbacks
+# (Stooq US feed, Polygon free tier) can't serve these and skip them cleanly.
+_NON_US_SUFFIXES = {"L", "DE", "AS", "PA"}
+
+
+def _trim_period(df, period: str):
+    """Trim a Date-indexed OHLCV frame to the requested ``period`` window."""
+    if df is None or getattr(df, "empty", True):
+        return df
+    days = _PERIOD_DAYS.get(period, 365)
+    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
+    trimmed = df[df.index >= cutoff]
+    return trimmed if not trimmed.empty else df
 
 
 def _get_av_key() -> str:
@@ -217,15 +253,176 @@ def _download_ohlcv_av(symbol: str, period: str):
     df = pd.DataFrame(rows).set_index("Date").sort_index()
 
     # Trim to match the requested period.
-    _PERIOD_DAYS = {
-        "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730,
-        "5y": 1825, "10y": 3650, "max": 99999,
-    }
-    days = _PERIOD_DAYS.get(period, 365)
-    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
-    df = df[df.index >= cutoff]
+    df = _trim_period(df, period)
 
     return df if not df.empty else None
+
+
+def _download_ohlcv_stooq(symbol: str, period: str):
+    """Stooq end-of-day CSV fallback for OHLCV data (no API key required).
+
+    Stooq serves US listings under lowercase symbols with a ``.us`` suffix and a
+    hyphen for share classes, e.g. ``MOG-A`` -> ``mog-a.us``. Non-US yfinance
+    suffixes (``.L`` / ``.DE`` / ...) aren't available on the US feed and are
+    skipped. Returns a DataFrame matching yfinance's column convention, or None.
+    """
+    if pd is None or requests is None:  # pragma: no cover - import guard
+        return None
+
+    base = symbol
+    if "." in base:
+        head, suffix = base.rsplit(".", 1)
+        if suffix.upper() in _NON_US_SUFFIXES:
+            return None  # US feed only
+        base = head
+
+    stooq_symbol = f"{base.lower()}.us"
+    try:
+        resp = requests.get(
+            _STOOQ_BASE, params={"s": stooq_symbol, "i": "d"}, timeout=15
+        )
+    except Exception as exc:
+        db.log_event("info", status="no_data", detail=f"stooq {stooq_symbol} error: {exc}")
+        return None
+    if resp.status_code != 200:
+        db.log_event(
+            "info", status="no_data",
+            detail=f"stooq {stooq_symbol} -> HTTP {resp.status_code}",
+        )
+        return None
+
+    text = (resp.text or "").strip()
+    # Stooq returns the plain text "No data" for an unknown symbol.
+    if not text or text.lower().startswith("no data"):
+        return None
+
+    try:
+        df = pd.read_csv(io.StringIO(text))
+    except Exception:
+        return None
+
+    required = {"Date", "Open", "High", "Low", "Close"}
+    if not required.issubset(set(df.columns)):
+        return None
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
+    keep = ["Open", "High", "Low", "Close"]
+    if "Volume" in df.columns:
+        keep.append("Volume")
+    df = df[keep]
+
+    df = _trim_period(df, period)
+    return df if df is not None and not df.empty else None
+
+
+def _get_massive_key() -> str:
+    """Resolve the Massive (formerly Polygon.io) API key (never logged).
+
+    Preference: ``lt_massive_key`` setting, then the legacy ``lt_polygon_key``
+    setting, then ``MASSIVE_API`` / ``POLYGON_API`` environment variables. The
+    legacy names are honoured so keys configured before the rebrand keep working.
+    """
+    for setting_name in ("lt_massive_key", "lt_polygon_key"):
+        try:
+            val = db.get_setting(setting_name, "") or ""
+        except Exception:
+            val = ""
+        if val:
+            return str(val)
+    return os.environ.get("MASSIVE_API", "") or os.environ.get("POLYGON_API", "") or ""
+
+
+# Back-compat alias for the pre-rebrand key resolver name.
+_get_polygon_key = _get_massive_key
+
+
+def _download_ohlcv_massive(symbol: str, period: str):
+    """Massive (formerly Polygon.io) daily-aggregates fallback for OHLCV data.
+
+    Needs an API key. The endpoint uses a dot for share classes, e.g. ``MOG-A``
+    (yfinance) -> ``MOG.A``, and the free tier covers US equities only, so non-US
+    yfinance suffixes are skipped. Tries the ``api.massive.com`` host first, then
+    the legacy ``api.polygon.io`` host. Returns a yfinance-shaped DataFrame, or
+    None.
+    """
+    if pd is None or requests is None:  # pragma: no cover - import guard
+        return None
+    token = _get_massive_key()
+    if not token:
+        return None
+
+    if "." in symbol and symbol.rsplit(".", 1)[1].upper() in _NON_US_SUFFIXES:
+        return None  # US equities only on the free tier
+    api_symbol = symbol.replace("-", ".")  # share class MOG-A -> MOG.A
+
+    days = _PERIOD_DAYS.get(period, 365)
+    to = _dt.date.today()
+    frm = to - _dt.timedelta(days=days)
+    path = (
+        f"/v2/aggs/ticker/{api_symbol}/range/1/day/"
+        f"{frm.isoformat()}/{to.isoformat()}"
+    )
+
+    resp = None
+    for host in _MASSIVE_HOSTS:
+        try:
+            resp = requests.get(
+                f"{host}{path}",
+                params={
+                    "adjusted": "true",
+                    "sort": "asc",
+                    "limit": 50000,
+                    "apiKey": token,
+                },
+                timeout=20,
+            )
+        except Exception as exc:
+            db.log_event("info", status="no_data", detail=f"massive aggs error: {exc}")
+            resp = None
+            continue
+        if resp.status_code == 200:
+            break
+        db.log_event(
+            "info", status="no_data",
+            detail=f"massive aggs {api_symbol} -> HTTP {resp.status_code}",
+        )
+        resp = None
+
+    if resp is None:
+        return None
+
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    results = data.get("results") if isinstance(data, dict) else None
+    if not results:
+        return None
+
+    rows = []
+    for bar in results:
+        try:
+            rows.append({
+                "Date": _dt.datetime.utcfromtimestamp(float(bar["t"]) / 1000.0),
+                "Open": float(bar["o"]),
+                "High": float(bar["h"]),
+                "Low": float(bar["l"]),
+                "Close": float(bar["c"]),
+                "Volume": int(bar.get("v", 0) or 0),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows).set_index("Date").sort_index()
+    return df if not df.empty else None
+
+
+# Back-compat alias for the pre-rebrand function name.
+_download_ohlcv_polygon = _download_ohlcv_massive
 
 
 def fetch_ohlcv(yf_symbol: str, period: str = "1y", *, retries: int = 3):
@@ -234,8 +431,10 @@ def fetch_ohlcv(yf_symbol: str, period: str = "1y", *, retries: int = 3):
     * A same-day on-disk cache in ``.cache/longterm/`` keyed on symbol+period+
       date means repeated runs on the same day never hit the network.
     * Network fetches retry up to ``retries`` times with exponential backoff.
-    * If yfinance fails entirely, Alpha Vantage TIME_SERIES_DAILY is tried as
-      a fallback (single attempt, no retry).
+    * On total yfinance failure the fallbacks are tried in order, each a single
+      attempt: Alpha Vantage TIME_SERIES_DAILY, then Stooq (keyless), then
+      Massive/Polygon.io (if an API key is configured). The first non-empty
+      frame wins.
 
     Returns ``None`` if every attempt fails or the result is empty.
     """
@@ -261,24 +460,30 @@ def fetch_ohlcv(yf_symbol: str, period: str = "1y", *, retries: int = 3):
         if attempt < retries - 1:
             time.sleep(0.5 * (2 ** attempt))  # 0.5s, 1s, ...
 
-    # ---- Alpha Vantage fallback -------------------------------------------
-    try:
-        df = _download_ohlcv_av(yf_symbol, period)
-        if df is not None and not df.empty:
-            _write_cache(path, df)
-            db.log_event(
-                "info", symbol=yf_symbol, status="ok",
-                detail="fetch_ohlcv: yfinance failed, Alpha Vantage succeeded",
-            )
-            return df
-    except Exception as exc:
-        last_err = exc
+    # ---- Ordered fallbacks: Alpha Vantage -> Stooq -> Polygon -------------
+    _fallbacks = (
+        ("Alpha Vantage", _download_ohlcv_av),
+        ("Stooq", _download_ohlcv_stooq),
+        ("Massive (Polygon.io)", _download_ohlcv_massive),
+    )
+    for name, fetcher in _fallbacks:
+        try:
+            df = fetcher(yf_symbol, period)
+            if df is not None and not df.empty:
+                _write_cache(path, df)
+                db.log_event(
+                    "info", symbol=yf_symbol, status="ok",
+                    detail=f"fetch_ohlcv: yfinance failed, {name} succeeded",
+                )
+                return df
+        except Exception as exc:
+            last_err = exc
 
     db.log_event(
         "info",
         symbol=yf_symbol,
         status="no_data",
-        detail=f"fetch_ohlcv failed (yfinance + AV): {last_err}",
+        detail=f"fetch_ohlcv failed (yfinance + AV + Stooq + Polygon): {last_err}",
     )
     return None
 

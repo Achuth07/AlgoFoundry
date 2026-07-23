@@ -323,6 +323,63 @@ _LT_LEGS = (
     ("news", "News", "score_news", None),
 )
 
+# Data-quality badge presentation: (css tone, short label, tooltip).
+_LT_DATA_QUALITY = {
+    "full": ("on", "Full", "all four signal legs scored"),
+    "partial_data": ("amber", "Partial", "some signal legs were unavailable"),
+    "no_data": ("off", "No data", "insufficient data to score"),
+}
+
+# Review-flag presentation: raw flag -> (short chip label, css tone). The full
+# human sentence for the tooltip is reused from scoring._FLAG_PHRASES.
+_LT_FLAG_DISPLAY = {
+    "manual_review": ("Review", "amber"),
+    "high_divergence": ("Signals diverge", "amber"),
+    "hysteresis_hold": ("Held steady", "neutral"),
+    "sell_suppressed_trend": ("Sell suppressed", "amber"),
+    "earnings_freeze": ("Earnings freeze", "amber"),
+    "drawdown_review": ("Drawdown", "off"),
+    "no_data": ("No data", "off"),
+    "adhoc": ("Ad-hoc", "neutral"),
+}
+
+
+def _lt_data_quality_badge(data_quality: str | None) -> dict | None:
+    """Return {tone, label, title} for the data-quality column, or None."""
+    if not data_quality:
+        return None
+    tone, label, title = _LT_DATA_QUALITY.get(
+        data_quality, ("neutral", data_quality, data_quality.replace("_", " "))
+    )
+    return {"tone": tone, "label": label, "title": title}
+
+
+def _lt_flag_chips(review_flags: str | None) -> list[dict]:
+    """Turn a comma-separated review_flags string into readable chips.
+
+    Each chip is {label, tone, title}; the title carries the full plain-English
+    explanation from scoring._FLAG_PHRASES when one exists.
+    """
+    try:
+        from .longterm.scoring import _FLAG_PHRASES
+    except Exception:  # pragma: no cover - scoring always importable in app
+        _FLAG_PHRASES = {}
+
+    chips: list[dict] = []
+    for raw in (review_flags or "").split(","):
+        flag = raw.strip()
+        if not flag:
+            continue
+        label, tone = _LT_FLAG_DISPLAY.get(
+            flag, (flag.replace("_", " "), "neutral")
+        )
+        chips.append({
+            "label": label,
+            "tone": tone,
+            "title": _FLAG_PHRASES.get(flag, label),
+        })
+    return chips
+
 
 def _lt_verdict_detail(v: dict) -> dict:
     """Break a verdict into structured parts for the expandable "why" panel.
@@ -393,7 +450,9 @@ def _lt_rows(snapshot: list[dict], verdicts_by_symbol: dict[str, dict]) -> list[
             "composite": v.get("composite"),
             "confidence": v.get("confidence"),
             "data_quality": v.get("data_quality"),
+            "data_quality_badge": _lt_data_quality_badge(v.get("data_quality")),
             "review_flags": v.get("review_flags"),
+            "flag_chips": _lt_flag_chips(v.get("review_flags")),
             "rationale": v.get("rationale"),
             "detail": _lt_verdict_detail(v) if v else {"legs": [], "news": [], "note": ""},
             "legs_used_label": "legs: " + ", ".join(legs_used) if legs_used else "",
@@ -655,6 +714,7 @@ def longterm_settings(
     lt_t212_env: str = Form("demo"),
     lt_finnhub_key: str = Form(""),
     lt_alpha_vantage_key: str = Form(""),
+    lt_massive_key: str = Form(""),
     lt_ai_provider: str = Form("openrouter"),
     lt_groq_api_key: str = Form(""),
     lt_gemini_api_key: str = Form(""),
@@ -676,6 +736,9 @@ def longterm_settings(
         "lt_t212_env": lt_t212_env,
         "lt_finnhub_key": lt_finnhub_key,
         "lt_alpha_vantage_key": lt_alpha_vantage_key,
+        # Save under the new key name; the legacy lt_polygon_key is still read
+        # as a fallback by the data layer for pre-rebrand configs.
+        "lt_massive_key": lt_massive_key,
         "lt_ai_provider": lt_ai_provider,
         "lt_groq_api_key": lt_groq_api_key,
         "lt_gemini_api_key": lt_gemini_api_key,

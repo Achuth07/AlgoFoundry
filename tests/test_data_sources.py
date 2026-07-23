@@ -80,6 +80,162 @@ def test_fetch_ohlcv_empty_symbol(ds):
     assert ds.fetch_ohlcv("") is None
 
 
+# ---- fetch_ohlcv: Stooq + Polygon fallbacks ------------------------------
+def _no_sleep(ds, monkeypatch):
+    monkeypatch.setattr(ds, "time", type("T", (), {
+        "sleep": staticmethod(lambda *_: None),
+        "monotonic": staticmethod(lambda: 0.0),
+    }))
+
+
+def _boom(sym, period):
+    raise RuntimeError("yfinance down")
+
+
+def test_stooq_download_parses_csv(ds, monkeypatch):
+    csv = "Date,Open,High,Low,Close,Volume\n" + "\n".join(
+        f"2024-01-{d:02d},10,11,9,10.5,1000" for d in range(1, 21)
+    )
+
+    class R:
+        status_code = 200
+        text = csv
+
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: R())
+    df = ds._download_ohlcv_stooq("MOG-A", "max")
+    assert df is not None and not df.empty
+    assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+
+
+def test_stooq_no_data_returns_none(ds, monkeypatch):
+    class R:
+        status_code = 200
+        text = "No data"
+
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: R())
+    assert ds._download_ohlcv_stooq("BOGUS", "1y") is None
+
+
+def test_stooq_skips_non_us_suffix(ds, monkeypatch):
+    called = {"n": 0}
+
+    def spy(*a, **k):
+        called["n"] += 1
+        raise AssertionError("should not hit the network")
+
+    monkeypatch.setattr(ds.requests, "get", spy)
+    assert ds._download_ohlcv_stooq("VUAG.L", "1y") is None
+    assert called["n"] == 0
+
+
+def test_fetch_ohlcv_falls_through_to_stooq(ds, tmp_path, monkeypatch):
+    monkeypatch.setattr(ds, "_CACHE_DIR", str(tmp_path / "cache"))
+    _no_sleep(ds, monkeypatch)
+    monkeypatch.setattr(ds, "_download_ohlcv", _boom)
+
+    csv = "Date,Open,High,Low,Close,Volume\n" + "\n".join(
+        f"2024-01-{d:02d},10,11,9,10.5,1000" for d in range(1, 21)
+    )
+
+    def fake_get(url, *a, **k):
+        # AV and Polygon need keys (none set) so only Stooq reaches here.
+        assert "stooq" in url
+        return type("R", (), {"status_code": 200, "text": csv})()
+
+    monkeypatch.setattr(ds.requests, "get", fake_get)
+    df = ds.fetch_ohlcv("MOG-A", period="max")
+    assert df is not None and not df.empty
+
+
+def test_massive_needs_key(ds):
+    # No key configured -> no network attempt, returns None.
+    assert ds._download_ohlcv_massive("MOG-A", "1y") is None
+
+
+def test_massive_key_back_compat_polygon_setting(ds, db):
+    # A key saved under the legacy lt_polygon_key name is still honoured.
+    db.set_setting("lt_polygon_key", "legacykey")
+    assert ds._get_massive_key() == "legacykey"
+    db.set_setting("lt_massive_key", "newkey")
+    assert ds._get_massive_key() == "newkey"  # new name wins
+
+
+def test_massive_converts_share_class_and_prefers_new_host(ds, db, monkeypatch):
+    db.set_setting("lt_massive_key", "testkey")
+    seen = {}
+    ts = int(_dt.datetime(2024, 1, 2).timestamp() * 1000)
+    results = [
+        {"t": ts + i * 86400000, "o": 10, "h": 11, "l": 9, "c": 10.5, "v": 1000}
+        for i in range(20)
+    ]
+
+    def fake_get(url, *a, **k):
+        seen["url"] = url
+        return type("R", (), {
+            "status_code": 200,
+            "json": staticmethod(lambda: {"results": results}),
+        })()
+
+    monkeypatch.setattr(ds.requests, "get", fake_get)
+    df = ds._download_ohlcv_massive("MOG-A", "max")
+    assert df is not None and not df.empty
+    # yfinance MOG-A must be sent as MOG.A, to the new massive.com host first.
+    assert "/ticker/MOG.A/" in seen["url"]
+    assert "api.massive.com" in seen["url"]
+
+
+def test_massive_falls_back_to_legacy_host(ds, db, monkeypatch):
+    db.set_setting("lt_massive_key", "testkey")
+    hosts = []
+    ts = int(_dt.datetime(2024, 1, 2).timestamp() * 1000)
+    results = [
+        {"t": ts + i * 86400000, "o": 10, "h": 11, "l": 9, "c": 10.5, "v": 1000}
+        for i in range(20)
+    ]
+
+    def fake_get(url, *a, **k):
+        hosts.append(url)
+        # New host errors out; legacy host serves data.
+        if "massive.com" in url:
+            return type("R", (), {"status_code": 500,
+                                   "json": staticmethod(lambda: {})})()
+        return type("R", (), {"status_code": 200,
+                              "json": staticmethod(lambda: {"results": results})})()
+
+    monkeypatch.setattr(ds.requests, "get", fake_get)
+    df = ds._download_ohlcv_massive("AAPL", "max")
+    assert df is not None and not df.empty
+    assert any("massive.com" in u for u in hosts)
+    assert any("polygon.io" in u for u in hosts)
+
+
+def test_fetch_ohlcv_falls_through_to_massive(ds, tmp_path, db, monkeypatch):
+    monkeypatch.setattr(ds, "_CACHE_DIR", str(tmp_path / "cache"))
+    _no_sleep(ds, monkeypatch)
+    monkeypatch.setattr(ds, "_download_ohlcv", _boom)
+    db.set_setting("lt_massive_key", "testkey")
+
+    ts = int(_dt.datetime(2024, 1, 2).timestamp() * 1000)
+    results = [
+        {"t": ts + i * 86400000, "o": 10, "h": 11, "l": 9, "c": 10.5, "v": 1000}
+        for i in range(20)
+    ]
+
+    def fake_get(url, *a, **k):
+        if "stooq" in url:
+            return type("R", (), {"status_code": 200, "text": "No data"})()
+        if "aggs" in url:
+            return type("R", (), {
+                "status_code": 200,
+                "json": staticmethod(lambda: {"results": results}),
+            })()
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(ds.requests, "get", fake_get)
+    df = ds.fetch_ohlcv("MOG-A", period="max")
+    assert df is not None and not df.empty
+
+
 # ---- Analyst leg ---------------------------------------------------------
 def test_analyst_not_applicable_for_etf(ds):
     r = ds.analyst_score({}, finnhub_symbol="SPY", instrument_type="etf")

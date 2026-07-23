@@ -99,3 +99,80 @@ def test_enrich_skips_manual_override(instruments, db):
     row = db.get_instrument("AAPL_US_EQ")
     assert row["yf_symbol"] == "AAPL.CUSTOM"
     assert row["manual_override"] == 1
+
+
+# ---- Share-class (slash) tickers -----------------------------------------
+def test_us_share_class_slash(instruments):
+    # Moog Inc. Class A: T212 uses a slash, yfinance a hyphen, Finnhub a dot.
+    inst = instruments.resolve("MOG/A_US_EQ")
+    assert inst.yf_symbol == "MOG-A"
+    assert inst.finnhub_symbol == "MOG.A"
+    assert inst.instrument_type == "equity"
+    assert inst.currency == "USD"
+
+
+def test_us_share_class_parse_only(instruments):
+    inst = instruments.parse("BRK/B_US_EQ")
+    assert inst.yf_symbol == "BRK-B"
+    assert inst.finnhub_symbol == "BRK.B"
+
+
+# ---- Successor / alias resolution ----------------------------------------
+def test_ticker_alias_maps_to_successor(instruments):
+    # IPXX merged into USAR; the legacy ticker should resolve to the successor.
+    inst = instruments.resolve("IPXX_US_EQ")
+    assert inst.yf_symbol == "USAR"
+    assert inst.finnhub_symbol == "USAR"
+    assert inst.instrument_type == "equity"
+
+
+def test_reheal_upgrades_stale_unknown_row(instruments, db):
+    # Simulate an auto row cached before slash support: 'unknown' with no symbol.
+    db.upsert_instrument(
+        t212_ticker="MOG/A_US_EQ", yf_symbol=None, finnhub_symbol=None,
+        currency=None, exchange=None, instrument_type="unknown",
+        manual_override=0,
+    )
+    inst = instruments.resolve("MOG/A_US_EQ")
+    assert inst.yf_symbol == "MOG-A"
+    # The stale row is healed in place.
+    row = db.get_instrument("MOG/A_US_EQ")
+    assert row["yf_symbol"] == "MOG-A"
+    assert row["instrument_type"] == "equity"
+
+
+def test_reheal_applies_new_alias_to_old_row(instruments, db):
+    # Simulate a pre-alias auto row that mapped IPXX to itself.
+    db.upsert_instrument(
+        t212_ticker="IPXX_US_EQ", yf_symbol="IPXX", finnhub_symbol="IPXX",
+        currency="USD", exchange="US", instrument_type="equity",
+        manual_override=0,
+    )
+    inst = instruments.resolve("IPXX_US_EQ")
+    assert inst.yf_symbol == "USAR"
+    row = db.get_instrument("IPXX_US_EQ")
+    assert row["yf_symbol"] == "USAR"
+
+
+def test_reheal_never_touches_manual_override(instruments, db):
+    instruments.set_manual_mapping(
+        "IPXX_US_EQ", yf_symbol="IPXX", finnhub_symbol="IPXX",
+        currency="USD", exchange="US", instrument_type="equity",
+    )
+    inst = instruments.resolve("IPXX_US_EQ")
+    # Manual mapping is preserved, alias does not override it.
+    assert inst.yf_symbol == "IPXX"
+    row = db.get_instrument("IPXX_US_EQ")
+    assert row["manual_override"] == 1
+
+
+def test_reheal_leaves_healthy_etf_row_untouched(instruments, db):
+    # A London ETF enriched to type 'etf' must not be reparsed back to 'equity'.
+    db.upsert_instrument(
+        t212_ticker="VUAGl_EQ", yf_symbol="VUAG.L", finnhub_symbol=None,
+        currency="GBX", exchange="London", instrument_type="etf",
+        manual_override=0,
+    )
+    inst = instruments.resolve("VUAGl_EQ")
+    assert inst.instrument_type == "etf"
+    assert inst.yf_symbol == "VUAG.L"

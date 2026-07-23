@@ -45,10 +45,39 @@ _LISTING_SUFFIXES: dict[str, tuple[str, str]] = {
     "p": (".PA", "Paris"),
 }
 
-# ``AAPL_US_EQ`` -> base=AAPL
-_US_EQ = re.compile(r"^(?P<base>[A-Za-z0-9.]+)_US_EQ$")
+# ``AAPL_US_EQ`` -> base=AAPL ; ``MOG/A_US_EQ`` -> base=MOG/A (share class).
+# Trading 212 separates a US share class with a slash, so the base may contain
+# ``/`` in addition to alphanumerics and dots.
+_US_EQ = re.compile(r"^(?P<base>[A-Za-z0-9./]+)_US_EQ$")
 # ``VUAGl_EQ`` -> base=VUAG, marker=l  (marker is a trailing lowercase letter)
 _INTL_EQ = re.compile(r"^(?P<base>[A-Za-z0-9.]*[A-Z0-9])(?P<marker>[ldap])_EQ$")
+
+
+# Successor mapping for tickers that changed via merger / de-SPAC / rename.
+# Keyed on the *US-equity base symbol* (the part before ``_US_EQ``). Trading 212
+# and TradingView may keep surfacing the legacy ticker for a position that has
+# already been through a corporate action, which leaves the market-data legs
+# with a dead symbol and "no data". Mapping the legacy base to its live
+# successor lets the existing sources fetch real data again.
+#
+# Extend this dict as new corporate actions are observed.
+TICKER_ALIASES: dict[str, str] = {
+    # Inflection Point Acquisition Corp. II merged into USA Rare Earth,
+    # delisted 2025-03-14; the position now trades as USAR.
+    "IPXX": "USAR",
+}
+
+
+def _us_symbols(base: str) -> tuple[str, str]:
+    """Derive (yfinance, Finnhub) symbols from a US-equity base.
+
+    A share-class base like ``MOG/A`` becomes ``MOG-A`` for yfinance (which uses
+    a hyphen) and ``MOG.A`` for Finnhub / most REST providers (which use a dot).
+    Plain bases pass through unchanged.
+    """
+    yf_symbol = base.replace("/", "-")
+    finnhub_symbol = base.replace("/", ".")
+    return yf_symbol, finnhub_symbol
 
 
 def parse(t212_ticker: str) -> Instrument:
@@ -60,11 +89,13 @@ def parse(t212_ticker: str) -> Instrument:
     """
     m = _US_EQ.match(t212_ticker)
     if m:
-        base = m.group("base")
+        # Resolve any known successor ticker before deriving provider symbols.
+        base = TICKER_ALIASES.get(m.group("base"), m.group("base"))
+        yf_symbol, finnhub_symbol = _us_symbols(base)
         return Instrument(
             t212_ticker=t212_ticker,
-            yf_symbol=base,
-            finnhub_symbol=base,
+            yf_symbol=yf_symbol,
+            finnhub_symbol=finnhub_symbol,
             currency="USD",
             exchange="US",
             instrument_type="equity",
@@ -101,17 +132,61 @@ def _instrument_from_row(row: dict[str, Any]) -> Instrument:
     )
 
 
+def _should_reheal(inst: Instrument) -> bool:
+    """Whether a cached *auto* mapping should be re-parsed.
+
+    Old auto rows created before a parser/alias improvement can carry a stale or
+    missing mapping (e.g. ``MOG/A`` cached as ``unknown`` before slash support,
+    or ``IPXX`` cached before its successor alias existed). We re-heal only when
+    the mapping is clearly deficient or a successor alias now applies, so we
+    never clobber legitimately enriched auto rows (e.g. an ETF whose type was
+    filled in from Trading 212 metadata).
+    """
+    if inst.instrument_type == "unknown" or not inst.yf_symbol:
+        return True
+    m = _US_EQ.match(inst.t212_ticker)
+    if m:
+        base = m.group("base")
+        alias = TICKER_ALIASES.get(base)
+        if alias is not None and inst.yf_symbol != _us_symbols(alias)[0]:
+            return True
+    return False
+
+
 def resolve(t212_ticker: str) -> Instrument:
     """Resolve a Trading 212 ticker to an :class:`Instrument`.
 
     Order: cache -> parse -> persist. A manual-override row in the cache is
-    always returned as-is and is never re-parsed or overwritten.
+    always returned as-is and is never re-parsed or overwritten. Auto-mapped
+    rows are self-healed (re-parsed and rewritten) when :func:`_should_reheal`
+    detects a stale mapping, so parser/alias improvements reach existing rows
+    without a manual migration.
     """
     row = db.get_instrument(t212_ticker)
     if row is not None:
-        # Return whatever is cached. Manual mappings win unconditionally; auto
-        # mappings are also cached, so a hit means we're done.
-        return _instrument_from_row(row)
+        inst = _instrument_from_row(row)
+        # Manual mappings win unconditionally.
+        if row.get("manual_override"):
+            return inst
+        # Self-heal a stale auto mapping if the parser now does better.
+        if _should_reheal(inst):
+            reparsed = parse(t212_ticker)
+            if reparsed.yf_symbol and (
+                reparsed.yf_symbol != inst.yf_symbol
+                or reparsed.finnhub_symbol != inst.finnhub_symbol
+                or reparsed.instrument_type != inst.instrument_type
+            ):
+                db.upsert_instrument(
+                    t212_ticker=reparsed.t212_ticker,
+                    yf_symbol=reparsed.yf_symbol,
+                    finnhub_symbol=reparsed.finnhub_symbol,
+                    currency=reparsed.currency,
+                    exchange=reparsed.exchange,
+                    instrument_type=reparsed.instrument_type,
+                    manual_override=0,
+                )
+                return reparsed
+        return inst
 
     inst = parse(t212_ticker)
     # Persist the auto-mapping (manual_override=0). upsert_instrument protects

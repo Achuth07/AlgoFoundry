@@ -258,6 +258,10 @@
     .badge.on { background:color-mix(in srgb,var(--green) 15%, transparent); color:var(--green-hi); }
     .badge.off { background:var(--danger-bg); color:var(--red); }
     .badge.amber { background:color-mix(in srgb,var(--amber) 18%, transparent); color:var(--amber); }
+    .badge.neutral { background:color-mix(in srgb,var(--muted) 16%, transparent); color:var(--muted); }
+    /* smaller badge variant for the dense verdict table */
+    .badge.sm { padding:2px 9px; font-size:10.5px; font-weight:600; }
+    .flagcell { display:flex; flex-wrap:wrap; gap:4px; }
 
     .pill { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:12px;
       background:var(--field); padding:8px 11px; border-radius:9px;
@@ -611,6 +615,12 @@
                   <input name="lt_finnhub_key" value="{{ settings.lt_finnhub_key }}"></div>
                 <div><label>Alpha Vantage API key</label>
                   <input name="lt_alpha_vantage_key" value="{{ settings.lt_alpha_vantage_key }}"></div>
+              </div>
+              <div class="row">
+                <div><label>Massive API key (formerly Polygon.io)</label>
+                  <input name="lt_massive_key" value="{{ settings.lt_massive_key or settings.lt_polygon_key }}"
+                         placeholder="optional — extra price-data fallback"></div>
+                <div></div>
               </div>
               <div class="row">
                 <div><label>Schedule time (HH:MM, {{ settings.lt_schedule_tz }})</label>
