@@ -5,7 +5,7 @@
 | Service | Plan | Cost |
 |---------|------|------|
 | Dyno | Basic (always on) | $7/mo |
-| Database | Mini Postgres | $5/mo |
+| Database | Postgres Essential-0 | $5/mo |
 | **Total** | | **$12/mo** |
 
 ## Prerequisites
@@ -25,27 +25,50 @@ heroku create algofoundry-app   # pick a unique name
 ## Step 2: Add Postgres
 
 ```bash
-heroku addons:create heroku-postgresql:mini -a algofoundry-app
+heroku addons:create heroku-postgresql:essential-0 -a algofoundry-app
 ```
+
+> Note: the old `mini` plan has been retired. Use `essential-0` ($5/mo).
+> Run `heroku addons:plans heroku-postgresql` to see current plans.
 
 This sets `DATABASE_URL` automatically. The updated `db.py` detects this
 and switches from SQLite to Postgres — no code changes needed.
 
 ## Step 3: Set Config Vars (Environment Variables)
 
+**Required — auth & security:**
+
 ```bash
 heroku config:set -a algofoundry-app \
     ALGOFOUNDRY_USER=admin \
     ALGOFOUNDRY_PASSWORD=your-strong-password \
-    ALGOFOUNDRY_WEBHOOK_SECRET=your-tradingview-secret \
-    OPENROUTER_API=your-key \
-    ALPHA_VANTAGE_API=your-key \
-    FINNHUB_API=your-key \
-    GROQ_API=your-key \
-    GEMINI_API=your-key
+    ALGOFOUNDRY_WEBHOOK_SECRET=your-tradingview-secret
 ```
 
+`ALGOFOUNDRY_PASSWORD` **must** be set — the default is the insecure
+placeholder `change-me-now`, and the dashboard is publicly accessible.
+`ALGOFOUNDRY_WEBHOOK_SECRET` is optional: if left unset, the app
+auto-generates a random secret on first boot (view it in Settings).
+
+**Optional — long-term / fundamentals data source API keys:**
+
+```bash
+heroku config:set -a algofoundry-app \
+    ALPHA_VANTAGE_API=your-key \
+    FINNHUB_API=your-key \
+    MASSIVE_API=your-key      # OR POLYGON_API (Massive is tried first, then Polygon)
+```
+
+The app boots fine without these; the long-term data features just won't
+fetch until they're set.
+
 Do NOT set `ALGOFOUNDRY_DB` — Heroku Postgres uses `DATABASE_URL` instead.
+The long-term scheduler is on by default; set `ALGOFOUNDRY_ENABLE_LT_SCHEDULER=0`
+to disable it.
+
+> These are the config vars the code actually reads. Earlier drafts of this
+> guide listed `OPENROUTER_API` / `GROQ_API` / `GEMINI_API`, which nothing in
+> the codebase uses — ignore them.
 
 ## Step 4: Deploy
 
