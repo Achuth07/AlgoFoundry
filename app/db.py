@@ -245,6 +245,13 @@ def _init_db_pg() -> None:
         conn = _conn_pg()
         try:
             cur = conn.cursor()
+            # Serialize schema creation across processes. With multiple uvicorn
+            # workers each process calls init_db() concurrently, and Postgres'
+            # "CREATE TABLE IF NOT EXISTS" is not catalog-safe under concurrency
+            # (SERIAL columns race on pg_type). A transaction-level advisory lock
+            # makes exactly one worker build the schema; it auto-releases on
+            # commit/rollback so the others then see the tables already present.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (72890123,))
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)"
             )
