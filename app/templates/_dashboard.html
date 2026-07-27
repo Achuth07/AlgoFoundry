@@ -1,0 +1,155 @@
+{#- Cross-broker portfolio dashboard.
+    Every money amount is converted into a single display currency
+    (``display_ccy``); per-share prices stay in each instrument's native
+    currency. Totals are therefore directly comparable across brokers. -#}
+{% set CCY = {'USD':'$','GBP':'£','EUR':'€','INR':'₹','CAD':'C$','AUD':'A$','JPY':'¥','CHF':'CHF ','HKD':'HK$','SGD':'S$'} %}
+
+{%- macro sym(c) -%}{{ CCY.get(c, (c ~ ' ') if c and c != '—' else '') }}{%- endmacro -%}
+
+{%- macro money(amount, c) -%}
+  {%- if amount is none -%}<span class="mut">—</span>
+  {%- else -%}{{ sym(c) }}{{ '{:,.2f}'.format(amount) }}{%- endif -%}
+{%- endmacro -%}
+
+{%- macro signed(amount, c) -%}
+  {%- if amount is none -%}<span class="mut">—</span>
+  {%- else -%}{{ '+' if amount >= 0 else '−' }}{{ sym(c) }}{{ '{:,.2f}'.format(amount|abs) }}{%- endif -%}
+{%- endmacro -%}
+
+{%- macro pnlcls(amount) -%}{{ 'pos' if (amount or 0) >= 0 else 'neg' }}{%- endmacro -%}
+
+{% if not any_holdings %}
+  {# Nothing to show — explain why and where to fix it. #}
+  <div class="dash-empty">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg>
+    <h3>No holdings to display yet</h3>
+    <p class="mut">Connect a broker to see your positions, invested capital and live P&amp;L here.</p>
+    <ul class="dash-empty-hints">
+      <li><b>Trading 212</b> — add your API key &amp; secret under <b>Long-Term → Settings</b>.</li>
+      <li><b>Interactive Brokers</b> — connect the gateway under <b>Algotrading → Settings</b>.</li>
+    </ul>
+  </div>
+{% else %}
+
+  {# ============ HERO KPIs — combined, in the display currency ============ #}
+  <div class="kpi-grid" role="group" aria-label="Combined portfolio totals in {{ display_ccy }}">
+    <div class="kpi">
+      <div class="k-label">Total invested</div>
+      <div class="k-val mono">{{ money(grand.invested, display_ccy) }}</div>
+      <div class="k-sub mut">cost basis across {{ grand.count }} position(s)</div>
+    </div>
+
+    <div class="kpi">
+      <div class="k-label">Market value</div>
+      <div class="k-val mono">{{ money(grand.market_value, display_ccy) }}</div>
+      <div class="k-sub mut">current worth of open positions</div>
+    </div>
+
+    <div class="kpi kpi-accent">
+      <div class="k-label">Total P&amp;L</div>
+      <div class="k-val mono {{ pnlcls(grand.pnl) }}">
+        {{ signed(grand.pnl, display_ccy) }}
+        {% if grand.pnl_pct is not none %}<span class="k-pct {{ pnlcls(grand.pnl) }}">{{ '{:+.2f}'.format(grand.pnl_pct) }}%</span>{% endif %}
+      </div>
+      <div class="k-sub mut">unrealized change, in {{ display_ccy }}</div>
+    </div>
+  </div>
+
+  {% if fx.unavailable %}
+  <p class="dash-note mut">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+    Live exchange rates are unavailable, so only {{ display_ccy }} holdings could be totalled.
+  </p>
+  {% elif fx.stale %}
+  <p class="dash-note mut">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+    Using cached exchange rates{% if fx.as_of %} from {{ fx.as_of }}{% endif %} — a live refresh wasn't reachable.
+  </p>
+  {% endif %}
+
+  {% if grand.unconvertible %}
+  <p class="dash-note mut">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+    {{ grand.unconvertible }} position(s) have an unknown currency and are excluded from the totals.
+  </p>
+  {% endif %}
+
+  {# ============ PER-BROKER BREAKDOWN ============ #}
+  {% for b in brokers %}
+  <section class="broker-card" aria-label="{{ b.name }}">
+    <header class="broker-head">
+      <div class="broker-id">
+        <span class="broker-name">{{ b.name }}</span>
+        <span class="chip">{{ b.env }}</span>
+        {% if b.connected %}
+          <span class="badge sm on">Connected</span>
+        {% else %}
+          <span class="badge sm neutral">Not connected</span>
+        {% endif %}
+      </div>
+      {% if b.holdings %}
+      <div class="broker-tot">
+        <div class="tot-block">
+          <span class="tot-lbl mut">Invested</span>
+          <span class="tot-val mono">{{ money(b.totals.invested, display_ccy) }}</span>
+        </div>
+        <div class="tot-block">
+          <span class="tot-lbl mut">P&amp;L</span>
+          <span class="tot-val mono {{ pnlcls(b.totals.pnl) }}">
+            {{ signed(b.totals.pnl, display_ccy) }}{% if b.totals.pnl_pct is not none %}
+            <span class="k-pct {{ pnlcls(b.totals.pnl) }}">{{ '{:+.2f}'.format(b.totals.pnl_pct) }}%</span>{% endif %}
+          </span>
+        </div>
+      </div>
+      {% endif %}
+    </header>
+
+    {% if b.error %}
+      <div class="broker-msg">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+        <span>{{ b.error }}</span>
+      </div>
+    {% elif not b.holdings %}
+      <p class="broker-msg mut">No open positions.</p>
+    {% else %}
+      <div class="table-scroll">
+        <table class="dash-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th class="ta-r">Qty</th>
+              <th class="ta-r">Avg cost</th>
+              <th class="ta-r">Price</th>
+              <th class="ta-r">Invested ({{ display_ccy }})</th>
+              <th class="ta-r">Value ({{ display_ccy }})</th>
+              <th class="ta-r">P&amp;L ({{ display_ccy }})</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for h in b.holdings %}
+            <tr>
+              <td><b>{{ h.symbol }}</b>{% if h.native_ccy %} <span class="mut ccy-tag">{{ h.native_ccy }}</span>{% endif %}</td>
+              <td class="ta-r mono num">{{ '{:g}'.format(h.qty) if h.qty is not none else '—' }}</td>
+              <td class="ta-r mono num">{{ money(h.avg_price, h.native_ccy) }}</td>
+              <td class="ta-r mono num">{{ money(h.current_price, h.native_ccy) }}</td>
+              <td class="ta-r mono num">{{ money(h.invested, display_ccy) }}</td>
+              <td class="ta-r mono num">{{ money(h.market_value, display_ccy) }}</td>
+              <td class="ta-r mono num {{ pnlcls(h.pnl) }}">
+                {{ signed(h.pnl, display_ccy) }}
+                {% if h.pnl_pct is not none %}<span class="k-pct {{ pnlcls(h.pnl) }}">{{ '{:+.1f}'.format(h.pnl_pct) }}%</span>{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </section>
+  {% endfor %}
+
+  <p class="dash-foot mut">
+    Totals in <b>{{ display_ccy }}</b> · prices shown in each instrument's native currency ·
+    {% if fx.as_of %}FX rates (ECB) as of {{ fx.as_of }} · {% endif %}
+    updated {{ generated_ts | datetimeformat }}
+  </p>
+{% endif %}

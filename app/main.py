@@ -49,6 +49,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import db
+from . import fx
 from .broker import BrokerError, broker
 from .models import WebhookSignal
 from .trading import handle_signal
@@ -203,6 +204,242 @@ def api_positions(request: Request, _: str = Depends(require_login)) -> HTMLResp
 def api_events(request: Request, _: str = Depends(require_login)) -> HTMLResponse:
     return templates.TemplateResponse(
         request, "_events.html", {"events": db.recent_events(60)},
+    )
+
+
+# ---- portfolio dashboard (cross-broker) ------------------------------------
+# Live overview of holdings across every connected broker. Each holding is
+# normalized in its own trading currency, then converted into a single display
+# currency (GBP by default; the user can switch to USD/INR) so per-broker and
+# combined invested / P&L totals are directly comparable.
+
+def _pnl_pct(pnl: float | None, invested: float | None) -> float | None:
+    if pnl is None or not invested:
+        return None
+    return pnl / invested * 100.0
+
+
+def _sum_totals(holdings: list[dict]) -> dict:
+    """Sum the (already display-currency) money columns across ``holdings``.
+
+    ``unconvertible`` counts positions whose native currency had no FX rate, so
+    the UI can flag that the totals exclude them.
+    """
+    invested = market_value = pnl = 0.0
+    count = unconvertible = 0
+    for h in holdings:
+        count += 1
+        if not h.get("convertible"):
+            unconvertible += 1
+            continue
+        invested += h.get("invested") or 0.0
+        market_value += h.get("market_value") or 0.0
+        pnl += h.get("pnl") or 0.0
+    return {
+        "invested": invested,
+        "market_value": market_value,
+        "pnl": pnl,
+        "pnl_pct": _pnl_pct(pnl, invested),
+        "count": count,
+        "unconvertible": unconvertible,
+    }
+
+
+# T212 exposes no per-position currency, and the instrument cache may not be
+# synced, so fall back to the listing suffix baked into the T212 ticker
+# (``AAPL_US_EQ`` -> USD, ``VUAGl_EQ`` -> London/GBP, ``…d_EQ`` -> Xetra/EUR).
+_T212_SUFFIX_CCY = {"l": "GBP", "d": "EUR", "a": "EUR", "p": "EUR"}
+
+
+def _infer_t212_currency(ticker: str) -> str:
+    t = ticker or ""
+    if t.endswith("_US_EQ"):
+        return "USD"
+    if t.endswith("_EQ") and len(t) >= 4:
+        marker = t[-4]  # char just before "_EQ"
+        return _T212_SUFFIX_CCY.get(marker, "")
+    return ""
+
+
+def _convert_holding(h: dict, display_ccy: str, rates: dict) -> dict:
+    """Convert a native-currency holding's money columns into ``display_ccy``.
+
+    ``avg_price`` / ``current_price`` stay in the instrument's native currency
+    (that is how prices are quoted); ``invested`` / ``market_value`` / ``pnl``
+    are converted. ``pnl_pct`` is a ratio and so is currency-independent.
+    """
+    native = h.get("native_ccy") or ""
+    inv = fx.convert(h.get("invested"), native, display_ccy, rates)
+    mkt = fx.convert(h.get("market_value"), native, display_ccy, rates)
+    pnl = fx.convert(h.get("pnl"), native, display_ccy, rates)
+    h["invested"] = inv
+    h["market_value"] = mkt
+    h["pnl"] = pnl
+    h["convertible"] = inv is not None or mkt is not None or pnl is not None
+    return h
+
+
+def _t212_dashboard() -> dict:
+    """Build the Trading 212 broker panel with native-currency holdings."""
+    from .longterm.t212 import fetch_portfolio, T212Error
+
+    s = db.get_all_settings()
+    configured = bool(s.get("lt_t212_api_key")) and bool(s.get("lt_t212_api_secret"))
+    panel = {
+        "name": "Trading 212",
+        "key": "t212",
+        "env": s.get("lt_t212_env") or "demo",
+        "connected": configured,
+        "error": None,
+        "holdings": [],
+        "totals": {},
+    }
+    if not configured:
+        panel["error"] = "Add your Trading 212 API key & secret in Long-Term settings."
+        return panel
+
+    try:
+        raw = fetch_portfolio()
+    except T212Error as exc:
+        panel["error"] = str(exc)
+        return panel
+    except Exception as exc:  # noqa: BLE001
+        panel["error"] = f"Could not load Trading 212 portfolio: {exc}"
+        return panel
+
+    from .longterm import instruments
+
+    holdings = []
+    for h in raw:
+        qty = h.quantity
+        avg = h.avg_price
+        cur = h.current_price
+        invested = (qty * avg) if (qty is not None and avg is not None) else None
+        market_value = (qty * cur) if (qty is not None and cur is not None) else None
+        pnl = (
+            market_value - invested
+            if (market_value is not None and invested is not None)
+            else h.ppl
+        )
+        # Prefer a clean market symbol (e.g. VUAG.L) over the raw T212 ticker.
+        display = h.t212_ticker
+        try:
+            inst = instruments.resolve(h.t212_ticker)
+            display = inst.yf_symbol or display
+        except Exception:  # noqa: BLE001
+            pass
+        holdings.append({
+            "symbol": display,
+            "qty": qty,
+            "avg_price": avg,
+            "current_price": cur,
+            "invested": invested,
+            "market_value": market_value,
+            "pnl": pnl,
+            "pnl_pct": _pnl_pct(pnl, invested),
+            "native_ccy": h.currency or _infer_t212_currency(h.t212_ticker),
+        })
+    panel["holdings"] = holdings
+    return panel
+
+
+def _ibkr_dashboard() -> dict:
+    """Build the IBKR broker panel with native-currency holdings."""
+    panel = {
+        "name": "Interactive Brokers",
+        "key": "ibkr",
+        "env": db.get_setting("mode_label", "paper"),
+        "connected": broker.is_connected(),
+        "error": None,
+        "holdings": [],
+        "totals": {},
+    }
+    if not panel["connected"]:
+        panel["error"] = "IBKR is not connected. Connect from Algotrading → Settings."
+        return panel
+
+    try:
+        raw = broker.portfolio()
+    except Exception as exc:  # noqa: BLE001
+        panel["error"] = f"Could not load IBKR portfolio: {exc}"
+        return panel
+
+    holdings = []
+    for p in raw:
+        qty = p.get("qty")
+        avg = p.get("avg_cost")
+        invested = (qty * avg) if (qty is not None and avg is not None) else None
+        pnl = p.get("unrealized_pnl")
+        holdings.append({
+            "symbol": p.get("symbol"),
+            "qty": qty,
+            "avg_price": avg,
+            "current_price": p.get("market_price"),
+            "invested": invested,
+            "market_value": p.get("market_value"),
+            "pnl": pnl,
+            "pnl_pct": _pnl_pct(pnl, invested),
+            "native_ccy": p.get("currency") or "",
+        })
+    panel["holdings"] = holdings
+    return panel
+
+
+def _dashboard_payload(display_ccy: str = "GBP") -> dict:
+    """Aggregate every broker panel plus combined totals in ``display_ccy``.
+
+    All money columns are converted into ``display_ccy`` via :mod:`app.fx`, so
+    per-broker and grand totals are single-currency and directly comparable.
+    """
+    display_ccy = (display_ccy or "GBP").upper()
+    if display_ccy not in fx.SUPPORTED_DISPLAY:
+        display_ccy = "GBP"
+    rates = fx.get_rates()
+
+    brokers = [_t212_dashboard(), _ibkr_dashboard()]
+    for b in brokers:
+        b["holdings"] = [
+            _convert_holding(h, display_ccy, rates) for h in b["holdings"]
+        ]
+        b["holdings"].sort(key=lambda x: (x["market_value"] or 0.0), reverse=True)
+        b["totals"] = _sum_totals(b["holdings"])
+
+    grand = {
+        "invested": 0.0, "market_value": 0.0, "pnl": 0.0,
+        "count": 0, "unconvertible": 0,
+    }
+    for b in brokers:
+        t = b["totals"]
+        grand["invested"] += t["invested"]
+        grand["market_value"] += t["market_value"]
+        grand["pnl"] += t["pnl"]
+        grand["count"] += t["count"]
+        grand["unconvertible"] += t["unconvertible"]
+    grand["pnl_pct"] = _pnl_pct(grand["pnl"], grand["invested"])
+
+    return {
+        "brokers": brokers,
+        "grand": grand,
+        "display_ccy": display_ccy,
+        "display_sym": fx.symbol(display_ccy),
+        "supported_ccy": fx.SUPPORTED_DISPLAY,
+        "fx": {
+            "as_of": rates.get("date"),
+            "ts": rates.get("ts"),
+            "stale": bool(rates.get("stale")),
+            "unavailable": bool(rates.get("unavailable")),
+        },
+        "any_holdings": any(b["holdings"] for b in brokers),
+        "generated_ts": time.time(),
+    }
+
+
+@app.get("/api/dashboard", response_class=HTMLResponse)
+def api_dashboard(
+    request: Request, ccy: str = "GBP", _: str = Depends(require_login)
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "_dashboard.html", _dashboard_payload(ccy),
     )
 
 

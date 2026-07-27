@@ -294,6 +294,92 @@
     .logcap { color:var(--faint); font-size:11.5px; margin:0 0 12px;
       font-family:'JetBrains Mono',ui-monospace,monospace; letter-spacing:0; }
 
+    /* ============================================================
+       DASHBOARD — cross-broker portfolio overview
+       ============================================================ */
+    .pos { color:var(--green-hi); }
+    .neg { color:var(--red); }
+    .ta-r { text-align:right !important; }
+
+    /* currency switcher + refresh */
+    .dash-controls { display:flex; align-items:center; gap:9px; flex:0 0 auto; }
+    .dash-ccy-lbl { margin:0; font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+      font-weight:700; color:var(--faint); }
+    select.dash-ccy { width:auto; min-width:112px; padding:9px 12px; font-weight:600;
+      font-family:'JetBrains Mono',ui-monospace,monospace; }
+
+    /* hero KPI cards */
+    .kpi-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px;
+      margin:0 0 18px; }
+    .kpi { position:relative; background:linear-gradient(180deg,var(--card-hi),var(--card));
+      border:1px solid var(--line); border-radius:var(--radius); padding:20px 22px;
+      box-shadow:var(--shadow); overflow:hidden; }
+    .kpi-accent::before { content:""; position:absolute; inset:0 auto 0 0; width:3px;
+      background:linear-gradient(180deg,var(--green),var(--green-dim)); }
+    .k-label { font-size:11px; text-transform:uppercase; letter-spacing:.09em;
+      color:var(--faint); font-weight:700; margin-bottom:12px; }
+    .k-stack { display:flex; flex-direction:column; gap:4px; }
+    .k-val { font-size:26px; font-weight:700; letter-spacing:-.02em; line-height:1.15;
+      color:var(--txt); display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
+    .k-pct { font-size:13px; font-weight:600; padding:2px 8px; border-radius:20px;
+      background:color-mix(in srgb,currentColor 14%, transparent); }
+    .k-sub { font-size:12px; margin-top:12px; }
+
+    .dash-note { display:flex; align-items:center; gap:9px; font-size:12.5px;
+      margin:-4px 0 18px; padding:10px 14px; border-radius:10px;
+      background:color-mix(in srgb,var(--amber) 12%, transparent);
+      border:1px solid color-mix(in srgb,var(--amber) 26%, var(--line)); color:var(--amber); }
+    .dash-note svg { width:16px; height:16px; flex:0 0 16px; stroke:currentColor;
+      fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+    /* per-broker panel */
+    .broker-card { background:linear-gradient(180deg,var(--card-hi),var(--card));
+      border:1px solid var(--line); border-radius:var(--radius); padding:20px 22px;
+      margin-bottom:18px; box-shadow:var(--shadow); }
+    .broker-head { display:flex; align-items:center; justify-content:space-between;
+      gap:16px; flex-wrap:wrap; margin-bottom:14px; padding-bottom:14px;
+      border-bottom:1px solid var(--line); }
+    .broker-id { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .broker-name { font-size:15.5px; font-weight:700; letter-spacing:-.02em; color:var(--txt); }
+    .chip { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:10.5px;
+      text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+      background:var(--field); border:1px solid var(--line); border-radius:7px; padding:3px 8px; }
+    .broker-tot { display:flex; align-items:stretch; gap:22px; flex-wrap:wrap; }
+    .tot-block { display:flex; flex-direction:column; gap:2px; }
+    .tot-lbl { font-size:10px; text-transform:uppercase; letter-spacing:.08em; font-weight:600; }
+    .tot-val { font-size:15px; font-weight:700; letter-spacing:-.01em;
+      display:flex; align-items:baseline; gap:7px; }
+    .tot-val .k-pct { font-size:11px; padding:1px 6px; }
+
+    .broker-msg { display:flex; align-items:center; gap:10px; font-size:13px;
+      padding:14px 4px; }
+    .broker-msg svg { width:18px; height:18px; flex:0 0 18px; stroke:var(--amber);
+      fill:none; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+
+    .table-scroll { overflow-x:auto; margin:0 -4px; }
+    .dash-table { min-width:640px; }
+    .dash-table th.ta-r, .dash-table td.ta-r { text-align:right; }
+    .ccy-tag { font-size:10px; font-family:'JetBrains Mono',ui-monospace,monospace; }
+    .k-pct.pos, .tot-val .k-pct.pos { color:var(--green-hi); }
+    .k-pct.neg, .tot-val .k-pct.neg { color:var(--red); }
+
+    .dash-foot { font-size:11.5px; margin-top:6px; }
+
+    /* dashboard empty state */
+    .dash-empty { text-align:center; padding:52px 24px; background:linear-gradient(180deg,var(--card-hi),var(--card));
+      border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+    .dash-empty svg { width:44px; height:44px; stroke:var(--faint); fill:none;
+      stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; margin-bottom:12px; }
+    .dash-empty h3 { margin:0 0 6px; font-size:17px; font-weight:700; letter-spacing:-.02em; }
+    .dash-empty-hints { list-style:none; margin:18px auto 0; padding:0; max-width:440px;
+      text-align:left; display:flex; flex-direction:column; gap:8px; }
+    .dash-empty-hints li { font-size:13px; color:var(--muted); padding:11px 14px;
+      background:var(--field); border:1px solid var(--line); border-radius:10px; }
+
+    @media (max-width:900px) {
+      .kpi-grid { grid-template-columns:1fr; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       * { animation-duration:.001ms !important; transition-duration:.001ms !important; }
     }
@@ -334,7 +420,11 @@
 
     <nav class="seg" role="tablist" aria-label="Primary">
       <span class="seg-thumb" id="segThumb" aria-hidden="true"></span>
-      <button role="tab" id="tab-algo" aria-selected="true" data-section="algo" onclick="showSection('algo')">
+      <button role="tab" id="tab-dash" aria-selected="true" data-section="dash" onclick="showSection('dash')">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="14" width="8" height="7" rx="1.5"/></svg>
+        <span>Dashboard</span>
+      </button>
+      <button role="tab" id="tab-algo" aria-selected="false" data-section="algo" onclick="showSection('algo')">
         <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>
         <span>Algotrading</span>
       </button>
@@ -371,10 +461,17 @@
   <div class="shell">
     <!-- =================== SIDEBAR (per-section sub-nav) =================== -->
     <aside>
-      <div class="side-label" id="sideLabel">Algotrading</div>
+      <div class="side-label" id="sideLabel">Dashboard</div>
+
+      <!-- Dashboard sub-nav -->
+      <div class="subnav show" data-for="dash">
+        <button class="navitem" aria-current="true" data-view="dash:overview" onclick="showView('dash','overview')">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="14" width="8" height="7" rx="1.5"/></svg> Overview
+        </button>
+      </div>
 
       <!-- Algotrading sub-nav -->
-      <div class="subnav show" data-for="algo">
+      <div class="subnav" data-for="algo">
         <button class="navitem" aria-current="true" data-view="algo:analysis" onclick="showView('algo','analysis')">
           <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg> Trading
         </button>
@@ -406,8 +503,49 @@
     <!-- =================== MAIN =================== -->
     <main class="maxw">
 
+      <!-- ======================= DASHBOARD ======================= -->
+      <section id="sec-dash" class="section show">
+        <div class="view show" id="view-dash-overview">
+          <div class="view-head" style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap">
+            <div>
+              <h1>Portfolio dashboard</h1>
+              <p>Live holdings, invested capital and P&amp;L across every connected broker.</p>
+            </div>
+            <div class="dash-controls">
+              <label class="dash-ccy-lbl" for="dash-ccy">Show in</label>
+              <select id="dash-ccy" name="ccy" class="dash-ccy"
+                      hx-get="/api/dashboard" hx-target="#dashboard-body" hx-swap="innerHTML"
+                      hx-trigger="change"
+                      onchange="try{localStorage.setItem('af_dash_ccy',this.value)}catch(e){}"
+                      aria-label="Display currency">
+                <option value="GBP">GBP · £</option>
+                <option value="USD">USD · $</option>
+                <option value="INR">INR · ₹</option>
+              </select>
+              <button class="ghost" hx-get="/api/dashboard" hx-include="#dash-ccy"
+                      hx-target="#dashboard-body" hx-swap="innerHTML">Refresh</button>
+            </div>
+          </div>
+          {# Restore the saved currency before the body's `load` trigger fires,
+             so the initial fetch and the 30s poll both use it via hx-include. #}
+          <script>
+            (function () {
+              try {
+                var v = localStorage.getItem('af_dash_ccy');
+                var sel = document.getElementById('dash-ccy');
+                if (v && sel) sel.value = v;
+              } catch (e) {}
+            })();
+          </script>
+          <div id="dashboard-body" hx-get="/api/dashboard" hx-include="#dash-ccy"
+               hx-trigger="load, every 30s">
+            <p class="mut">Loading portfolio…</p>
+          </div>
+        </div>
+      </section>
+
       <!-- ======================= ALGOTRADING ======================= -->
-      <section id="sec-algo" class="section show">
+      <section id="sec-algo" class="section">
 
         <!-- Trading / Analysis -->
         <div class="view show" id="view-algo-analysis">
@@ -711,14 +849,15 @@
     }
 
     /* ---------------- primary section nav ---------------- */
-    var SECTIONS = ['algo', 'lt'];
+    var SECTIONS = ['dash', 'algo', 'lt'];
     // Sub-views differ per section: Long-Term has its own "Analyze" page.
     var SUBS_BY_SEC = {
+      dash: ['overview'],
       algo: ['analysis', 'settings', 'logs'],
       lt: ['analysis', 'analyze', 'settings', 'logs'],
     };
     function subsFor(sec) { return SUBS_BY_SEC[sec] || SUBS_BY_SEC.algo; }
-    var LABEL = { algo: 'Algotrading', lt: 'Long-Term' };
+    var LABEL = { dash: 'Dashboard', algo: 'Algotrading', lt: 'Long-Term' };
     // Algotrading's first view is called "Trading" rather than "Analysis".
 
     function positionThumb() {
@@ -730,7 +869,7 @@
     }
 
     function showSection(sec) {
-      if (SECTIONS.indexOf(sec) < 0) sec = 'algo';
+      if (SECTIONS.indexOf(sec) < 0) sec = 'dash';
       SECTIONS.forEach(function (s) {
         document.getElementById('sec-' + s).classList.toggle('show', s === sec);
         var tab = document.getElementById('tab-' + s);
@@ -745,7 +884,7 @@
     /* ---------------- per-section sub-view nav ---------------- */
     function showView(sec, sub) {
       var subs = subsFor(sec);
-      if (subs.indexOf(sub) < 0) sub = 'analysis';
+      if (subs.indexOf(sub) < 0) sub = subs[0] || 'analysis';
       subs.forEach(function (v) {
         var el = document.getElementById('view-' + sec + '-' + v);
         if (el) el.classList.toggle('show', v === sub);
@@ -758,13 +897,14 @@
 
     /* ---------------- restore state ---------------- */
     (function () {
-      var sec = 'algo';
-      try { sec = localStorage.getItem('af_section') || 'algo'; } catch (e) {}
-      if (SECTIONS.indexOf(sec) < 0) sec = 'algo';
+      var sec = 'dash';
+      try { sec = localStorage.getItem('af_section') || 'dash'; } catch (e) {}
+      if (SECTIONS.indexOf(sec) < 0) sec = 'dash';
       SECTIONS.forEach(function (s) {
-        var sub = 'analysis';
-        try { sub = localStorage.getItem('af_view_' + s) || 'analysis'; } catch (e) {}
-        if (subsFor(s).indexOf(sub) < 0) sub = 'analysis';
+        var def = subsFor(s)[0];
+        var sub = def;
+        try { sub = localStorage.getItem('af_view_' + s) || def; } catch (e) {}
+        if (subsFor(s).indexOf(sub) < 0) sub = def;
         showView(s, sub);
       });
       showSection(sec);

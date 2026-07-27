@@ -148,6 +148,52 @@ class IBKRBroker:
                 return p["qty"]
         return 0.0
 
+    def portfolio(self) -> list[dict[str, Any]]:
+        """Return open positions enriched with cost basis, market value and P&L.
+
+        Unlike :meth:`positions` (which only knows quantity + average cost), this
+        reads IBKR's portfolio items, which carry the live market price, market
+        value and unrealized P&L per position. Amounts are in each contract's own
+        trading currency (``currency``). Returns ``[]`` when disconnected.
+        """
+        if not self._ib.isConnected():
+            return []
+
+        async def _p():
+            # Portfolio items are populated via the account-updates
+            # subscription; request it for the (first) managed account so a
+            # freshly-connected session has data. Best-effort — a failure here
+            # must not blow up the dashboard.
+            try:
+                accounts = self._ib.managedAccounts() or []
+                await self._ib.reqAccountUpdatesAsync(accounts[0] if accounts else "")
+            except Exception:  # noqa: BLE001
+                pass
+
+            def _f(x):
+                try:
+                    v = float(x)
+                    return None if math.isnan(v) else v
+                except (TypeError, ValueError):
+                    return None
+
+            out = []
+            for it in self._ib.portfolio():
+                c = it.contract
+                out.append({
+                    "symbol": c.symbol,
+                    "qty": _f(it.position),
+                    "avg_cost": _f(it.averageCost),
+                    "market_price": _f(it.marketPrice),
+                    "market_value": _f(it.marketValue),
+                    "unrealized_pnl": _f(it.unrealizedPNL),
+                    "currency": c.currency or "",
+                    "account": it.account,
+                })
+            return out
+
+        return self._run(_p())
+
     def open_orders(self) -> list[dict[str, Any]]:
         if not self._ib.isConnected():
             return []
