@@ -22,7 +22,6 @@ import re
 import secrets
 import threading
 import time
-from typing import Annotated
 
 # Auto-load .env file if present (no python-dotenv dependency needed).
 _env_file = pathlib.Path(__file__).resolve().parent.parent / ".env"
@@ -37,17 +36,17 @@ if _env_file.is_file():
         if _k and _k not in os.environ:   # don't override explicit exports
             os.environ[_k] = _v
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
 )
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import auth
 from . import db
 from . import fx
 from .broker import BrokerError, broker
@@ -56,7 +55,6 @@ from .trading import handle_signal
 
 app = FastAPI(title="AlgoFoundry")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-security = HTTPBasic()
 
 
 def _datetimeformat(ts: float) -> str:
@@ -95,13 +93,10 @@ app.mount(
     name="static",
 )
 
-GUI_USER = os.environ.get("ALGOFOUNDRY_USER", "admin")
-GUI_PASS = os.environ.get("ALGOFOUNDRY_PASSWORD", "change-me-now")
-
-
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    auth.ensure_seed()          # seed registration code + initial admin from env
     db.log_event("info", detail="AlgoFoundry started")
     # Start the long-term daily scheduler, unless running under pytest or the
     # env kill-switch is set. Failures here must never block app startup.
@@ -114,18 +109,145 @@ def _startup() -> None:
 
 
 # ---- auth ------------------------------------------------------------------
-def require_login(
-    creds: Annotated[HTTPBasicCredentials, Depends(security)],
-) -> str:
-    ok_user = secrets.compare_digest(creds.username, GUI_USER)
-    ok_pass = secrets.compare_digest(creds.password, GUI_PASS)
-    if not (ok_user and ok_pass):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
+# Paths reachable without a session. Everything else is gated by the auth
+# middleware below and redirects to /login.
+_PUBLIC_PATHS = {
+    "/login", "/signup", "/logout", "/webhook", "/health", "/favicon.ico",
+}
+_PUBLIC_PREFIXES = ("/static",)
+
+
+def _is_public(path: str) -> bool:
+    return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES)
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """Gate every non-public path behind a valid session cookie.
+
+    Unauthenticated browsers get a 303 to /login; unauthenticated HTMX polls
+    get an ``HX-Redirect`` so the whole page (not just a fragment) navigates to
+    the login screen when a session expires.
+    """
+    if _is_public(request.url.path):
+        return await call_next(request)
+
+    user = auth.session_user(request.cookies.get(auth.SESSION_COOKIE))
+    if not user:
+        if request.headers.get("HX-Request"):
+            return HTMLResponse("", headers={"HX-Redirect": "/login"})
+        return RedirectResponse("/login", status_code=303)
+
+    request.state.user = user
+    return await call_next(request)
+
+
+def require_login(request: Request) -> str:
+    """Return the authenticated username (guaranteed set by the middleware)."""
+    return getattr(request.state, "user", "")
+
+
+def require_admin(request: Request) -> str:
+    """Ensure the current user is an admin, else 403."""
+    user = getattr(request.state, "user", "")
+    if not auth.is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def _set_session_cookie(response, token: str) -> None:
+    response.set_cookie(
+        auth.SESSION_COOKIE, token,
+        max_age=int(auth._SESSION_TTL_S),
+        httponly=True, samesite="lax", secure=auth.COOKIE_SECURE, path="/",
+    )
+
+
+# ---- login / signup / logout ----------------------------------------------
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request) -> HTMLResponse:
+    if auth.session_user(request.cookies.get(auth.SESSION_COOKIE)):
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(
+        request, "auth.html",
+        {"mode": "login", "logo_uri": _logo_data_uri(),
+         "error": None, "username": "", "signup_enabled": auth.signup_enabled()},
+    )
+
+
+@app.post("/login")
+def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+) -> HTMLResponse:
+    uname = auth.normalize_username(username)
+    if auth.authenticate(uname, password):
+        token, _exp = auth.start_session(uname)
+        db.log_event("info", action="login", detail=f"user '{uname}' signed in")
+        resp = RedirectResponse("/", status_code=303)
+        _set_session_cookie(resp, token)
+        return resp
+    return templates.TemplateResponse(
+        request, "auth.html",
+        {"mode": "login", "logo_uri": _logo_data_uri(),
+         "error": "Incorrect username or password.", "username": username,
+         "signup_enabled": auth.signup_enabled()},
+        status_code=401,
+    )
+
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_form(request: Request) -> HTMLResponse:
+    if auth.session_user(request.cookies.get(auth.SESSION_COOKIE)):
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(
+        request, "auth.html",
+        {"mode": "signup", "logo_uri": _logo_data_uri(),
+         "error": None, "username": "", "signup_enabled": auth.signup_enabled()},
+    )
+
+
+@app.post("/signup")
+def signup_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    code: str = Form(""),
+) -> HTMLResponse:
+    def _fail(msg: str, status_code: int = 400) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request, "auth.html",
+            {"mode": "signup", "logo_uri": _logo_data_uri(),
+             "error": msg, "username": username,
+             "signup_enabled": auth.signup_enabled()},
+            status_code=status_code,
         )
-    return creds.username
+
+    if not auth.signup_enabled():
+        return _fail("Sign-up is disabled — no registration code is configured.", 403)
+    if not auth.check_signup_code(code):
+        return _fail("Invalid registration code.", 403)
+
+    ok, err = auth.register(username, password)
+    if not ok:
+        return _fail(err or "Could not create the account.")
+
+    uname = auth.normalize_username(username)
+    token, _exp = auth.start_session(uname)
+    db.log_event("info", action="signup", detail=f"account '{uname}' created")
+    resp = RedirectResponse("/", status_code=303)
+    _set_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/logout")
+def logout(request: Request) -> RedirectResponse:
+    token = request.cookies.get(auth.SESSION_COOKIE)
+    auth.end_session(token)
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return resp
 
 
 # ---- webhook (public, secret-authenticated) --------------------------------
@@ -163,7 +285,7 @@ async def webhook(request: Request) -> JSONResponse:
 
 # ---- dashboard -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, _: str = Depends(require_login)) -> HTMLResponse:
+def dashboard(request: Request, user: str = Depends(require_login)) -> HTMLResponse:
     from .longterm.ai_research import get_provider_models
     return templates.TemplateResponse(
         request, "index.html",
@@ -171,6 +293,8 @@ def dashboard(request: Request, _: str = Depends(require_login)) -> HTMLResponse
             "settings": db.get_all_settings(),
             "logo_uri": _logo_data_uri(),
             "provider_models": get_provider_models(),
+            "user": user,
+            "is_admin": auth.is_admin(user),
         },
     )
 
@@ -545,6 +669,17 @@ def api_manual(
 def api_regen_secret(_: str = Depends(require_login)) -> RedirectResponse:
     db.set_setting("webhook_secret", secrets.token_urlsafe(24))
     db.log_event("info", detail="webhook secret regenerated")
+    return RedirectResponse("/", status_code=303)
+
+
+@app.post("/api/access")
+def api_access(
+    user: str = Depends(require_admin),
+    signup_code: str = Form(""),
+) -> RedirectResponse:
+    """Update the shared registration code that gates account sign-up (admin only)."""
+    db.set_setting("signup_code", (signup_code or "").strip())
+    db.log_event("info", action="access", detail=f"registration code updated by '{user}'")
     return RedirectResponse("/", status_code=303)
 
 

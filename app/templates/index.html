@@ -175,6 +175,44 @@
     .kill:hover { background:var(--red); color:#fff; border-color:var(--red);
                   box-shadow:0 8px 20px -10px var(--red); }
 
+    /* account chip + sign-out */
+    .account { display:inline-flex; align-items:center; gap:8px; }
+    .acct-user { display:inline-flex; align-items:center; gap:7px; padding:7px 12px;
+      border-radius:999px; font-size:12.5px; font-weight:600; color:var(--muted);
+      background:var(--field); border:1px solid var(--line); max-width:180px;
+      box-shadow:none; cursor:pointer; font-family:inherit; letter-spacing:-.01em;
+      transition:.15s var(--ease); }
+    .acct-user:hover { color:var(--txt); border-color:var(--line-hi);
+      background:var(--hover-2); transform:none; }
+    .acct-user svg { width:15px; height:15px; flex:0 0 15px; stroke:currentColor;
+      fill:none; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+    .acct-user .acct-caret { width:13px; height:13px; flex:0 0 13px; opacity:.7;
+      transition:transform .2s var(--ease); }
+    .acct-user[aria-current="true"] { color:var(--green-hi);
+      border-color:color-mix(in srgb,var(--green) 34%, var(--line));
+      background:color-mix(in srgb,var(--green) 10%, transparent); }
+    .acct-user[aria-current="true"] .acct-caret { transform:rotate(180deg); }
+    .acct-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .logout { display:inline-grid; place-items:center; width:36px; height:36px; padding:0;
+      color:var(--muted); background:var(--field); border:1px solid var(--line);
+      border-radius:10px; box-shadow:none; transition:.15s var(--ease); }
+    .logout svg { width:17px; height:17px; stroke:currentColor; fill:none;
+      stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+    .logout:hover { color:var(--txt); background:var(--hover-2); border-color:var(--line-hi);
+      transform:none; }
+
+    /* account summary card (Settings > Account) */
+    .acct-summary { display:flex; align-items:center; gap:16px; }
+    .acct-avatar { flex:0 0 46px; width:46px; height:46px; border-radius:50%;
+      display:grid; place-items:center; color:var(--green-hi);
+      background:color-mix(in srgb,var(--green) 12%, transparent);
+      border:1px solid color-mix(in srgb,var(--green) 26%, var(--line)); }
+    .acct-avatar svg { width:24px; height:24px; stroke:currentColor; fill:none;
+      stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .acct-meta { display:flex; flex-direction:column; gap:6px; min-width:0; }
+    .acct-uname { font-size:16px; font-weight:700; letter-spacing:-.02em; color:var(--txt);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
     /* ============================================================
        BODY LAYOUT — per-section sidebar + main
        ============================================================ */
@@ -455,6 +493,22 @@
           <span>Kill switch</span>
         </button>
       </form>
+
+      {% if user %}
+      <div class="account">
+        <button class="acct-user" id="acctBtn" type="button" onclick="showSection('settings')"
+                title="Settings — signed in as {{ user }}" aria-label="Open settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+          <span class="acct-name">{{ user }}</span>
+          <svg class="acct-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <form method="post" action="/logout" style="margin:0">
+          <button class="logout" type="submit" title="Sign out" aria-label="Sign out">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+          </button>
+        </form>
+      </div>
+      {% endif %}
     </div>
   </header>
 
@@ -497,6 +551,18 @@
         <button class="navitem" data-view="lt:logs" onclick="showView('lt','logs')">
           <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg> Logs
         </button>
+      </div>
+
+      <!-- Settings sub-nav (opened from the account chip) -->
+      <div class="subnav" data-for="settings">
+        <button class="navitem" aria-current="true" data-view="settings:account" onclick="showView('settings','account')">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg> Account
+        </button>
+        {% if is_admin %}
+        <button class="navitem" data-view="settings:access" onclick="showView('settings','access')">
+          <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Access
+        </button>
+        {% endif %}
       </div>
     </aside>
 
@@ -829,8 +895,108 @@
         </div>
       </section>
 
+      <!-- ======================= SETTINGS (global) ======================= -->
+      <section id="sec-settings" class="section">
+
+        <!-- Account -->
+        <div class="view show" id="view-settings-account">
+          <div class="view-head">
+            <h1>Account</h1>
+            <p>Your profile and session.</p>
+          </div>
+          <div class="card">
+            <h2>Signed in</h2>
+            <div class="acct-summary">
+              <div class="acct-avatar" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
+              </div>
+              <div class="acct-meta">
+                <div class="acct-uname">{{ user }}</div>
+                <div>
+                  {% if is_admin %}<span class="badge on">Admin</span>
+                  {% else %}<span class="badge neutral">User</span>{% endif %}
+                </div>
+              </div>
+              <form method="post" action="/logout" style="margin:0 0 0 auto">
+                <button class="ghost" type="submit">Sign out</button>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        {% if is_admin %}
+        <!-- Access (admin only) -->
+        <div class="view" id="view-settings-access">
+          <div class="view-head">
+            <h1>Access &amp; accounts</h1>
+            <p>Control who can register for this console.</p>
+          </div>
+          <div class="card">
+            <h2>Registration code</h2>
+            <p class="mut" style="margin-top:0;font-size:12.5px">
+              New users register at <b>/signup</b> using this code. Share it only with
+              people you trust — leave it blank to disable sign-up entirely.</p>
+            <form method="post" action="/api/access">
+              <label>Registration code</label>
+              <input name="signup_code" value="{{ settings.signup_code }}"
+                     autocomplete="off" spellcheck="false"
+                     placeholder="a code you share with trusted users">
+              <div class="btnrow">
+                <button type="submit">Save registration code</button>
+                <a href="/signup" target="_blank" rel="noopener"
+                   style="text-decoration:none"><button class="ghost" type="button">Open sign-up page</button></a>
+              </div>
+            </form>
+          </div>
+        </div>
+        {% endif %}
+      </section>
+
     </main>
   </div>
+
+  <!-- Floating tooltip for the portfolio growth charts (shared across swaps) -->
+  <div id="chartTip" class="chart-tip" hidden></div>
+
+  <script>
+    /* ---------------- growth-chart hover tooltip ---------------- */
+    // Delegated so it keeps working after HTMX swaps the dashboard fragment.
+    (function () {
+      var tip = document.getElementById('chartTip');
+      if (!tip) return;
+      function place(x, y) {
+        var pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+        var left = x + pad, top = y - h - pad;
+        if (left + w > window.innerWidth - 8) left = x - w - pad;
+        if (top < 8) top = y + pad;
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+      }
+      function show(node, x, y) {
+        var date = node.getAttribute('data-date') || '';
+        var val = node.getAttribute('data-value') || '';
+        var inv = node.getAttribute('data-invested');
+        tip.innerHTML = '<div class="ct-date">' + date + '</div>' +
+          '<div class="ct-val">' + val + '</div>' +
+          (inv ? '<div class="ct-inv">cost ' + inv + '</div>' : '');
+        tip.hidden = false;
+        place(x, y);
+      }
+      function hide() { tip.hidden = true; }
+      function nodeFrom(e) { return e.target.closest ? e.target.closest('.g-node') : null; }
+      document.addEventListener('mouseover', function (e) {
+        var n = nodeFrom(e); if (n) show(n, e.clientX, e.clientY);
+      });
+      document.addEventListener('mousemove', function (e) {
+        if (tip.hidden) return;
+        var n = nodeFrom(e); if (n) place(e.clientX, e.clientY); else hide();
+      });
+      document.addEventListener('mouseout', function (e) {
+        if (nodeFrom(e)) hide();
+      });
+      document.body.addEventListener('htmx:beforeSwap', hide);
+    })();
+  </script>
 
   <script>
     /* ---------------- theme ---------------- */
@@ -849,21 +1015,27 @@
     }
 
     /* ---------------- primary section nav ---------------- */
-    var SECTIONS = ['dash', 'algo', 'lt'];
+    // 'settings' is a section too, but it has no segmented tab — it opens from
+    // the account chip in the top bar instead.
+    var SECTIONS = ['dash', 'algo', 'lt', 'settings'];
     // Sub-views differ per section: Long-Term has its own "Analyze" page.
     var SUBS_BY_SEC = {
       dash: ['overview'],
       algo: ['analysis', 'settings', 'logs'],
       lt: ['analysis', 'analyze', 'settings', 'logs'],
+      settings: ['account', 'access'],
     };
     function subsFor(sec) { return SUBS_BY_SEC[sec] || SUBS_BY_SEC.algo; }
-    var LABEL = { dash: 'Dashboard', algo: 'Algotrading', lt: 'Long-Term' };
+    var LABEL = { dash: 'Dashboard', algo: 'Algotrading', lt: 'Long-Term',
+                  settings: 'Settings' };
     // Algotrading's first view is called "Trading" rather than "Analysis".
 
     function positionThumb() {
-      var active = document.querySelector('.seg button[aria-selected="true"]');
       var thumb = document.getElementById('segThumb');
-      if (!active || !thumb) return;
+      if (!thumb) return;
+      var active = document.querySelector('.seg button[aria-selected="true"]');
+      if (!active) { thumb.style.opacity = '0'; return; }  // e.g. Settings section
+      thumb.style.opacity = '1';
       thumb.style.width = active.offsetWidth + 'px';
       thumb.style.transform = 'translateX(' + (active.offsetLeft - 4) + 'px)';
     }
@@ -871,11 +1043,16 @@
     function showSection(sec) {
       if (SECTIONS.indexOf(sec) < 0) sec = 'dash';
       SECTIONS.forEach(function (s) {
-        document.getElementById('sec-' + s).classList.toggle('show', s === sec);
-        var tab = document.getElementById('tab-' + s);
-        tab.setAttribute('aria-selected', s === sec ? 'true' : 'false');
-        document.querySelector('.subnav[data-for="' + s + '"]').classList.toggle('show', s === sec);
+        var secEl = document.getElementById('sec-' + s);
+        if (secEl) secEl.classList.toggle('show', s === sec);
+        var tab = document.getElementById('tab-' + s);          // no tab for 'settings'
+        if (tab) tab.setAttribute('aria-selected', s === sec ? 'true' : 'false');
+        var sub = document.querySelector('.subnav[data-for="' + s + '"]');
+        if (sub) sub.classList.toggle('show', s === sec);
       });
+      // The account chip acts as the "tab" for the Settings section.
+      var acct = document.getElementById('acctBtn');
+      if (acct) acct.setAttribute('aria-current', sec === 'settings' ? 'true' : 'false');
       document.getElementById('sideLabel').textContent = LABEL[sec];
       positionThumb();
       try { localStorage.setItem('af_section', sec); } catch (e) {}

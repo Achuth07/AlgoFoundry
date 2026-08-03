@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ 'Sign in' if mode == 'login' else 'Create account' }} · AlgoFoundry</title>
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('af_theme');
+        if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
+  <style>
+    :root, [data-theme="dark"] {
+      --bg:#0b0c0d; --panel:#141618; --card:#17191c; --card-hi:#1c1f22;
+      --line:#282b2f; --line-hi:#363b41;
+      --txt:#eaedef; --muted:#9aa1a6; --faint:#828a90;
+      --green:#2bbf3c; --green-hi:#4bd85b; --green-dim:#1c8c2b;
+      --red:#f0555a; --amber:#e6a93a;
+      --accent:#38c948; --accent-2:#22a233; --accent-ink:#06210b;
+      --field:rgba(0,0,0,.28); --field-focus:rgba(0,0,0,.38);
+      --glow:rgba(43,191,60,.16); --glow-2:rgba(43,191,60,.06);
+      --bg-glow:rgba(43,191,60,.10); --bg-glow-2:rgba(255,255,255,.010);
+      --danger-bg:rgba(240,85,90,.10); --danger-line:rgba(240,85,90,.32);
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 24px 60px -24px rgba(0,0,0,.8);
+    }
+    [data-theme="light"] {
+      --bg:#eef2f0; --panel:#ffffff; --card:#ffffff; --card-hi:#ffffff;
+      --line:#dde5e1; --line-hi:#c8d4ce;
+      --txt:#0f201c; --muted:#4b625b; --faint:#5f766e;
+      --green:#1f9e30; --green-hi:#0c7a23; --green-dim:#178a28;
+      --red:#cf2029; --amber:#8f6205;
+      --accent:#1f9e30; --accent-2:#178a28; --accent-ink:#ffffff;
+      --field:#f4f7f5; --field-focus:#eef3f0;
+      --glow:rgba(31,158,48,.10); --glow-2:rgba(31,158,48,.04);
+      --bg-glow:rgba(31,158,48,.12); --bg-glow-2:rgba(31,158,48,.04);
+      --danger-bg:rgba(207,32,41,.07); --danger-line:rgba(207,32,41,.28);
+      --shadow:0 1px 2px rgba(16,32,28,.06), 0 24px 60px -28px rgba(16,32,28,.30);
+    }
+    :root { --radius:16px; --ease:cubic-bezier(.16,1,.3,1); }
+    * { box-sizing:border-box; }
+    html, body { height:100%; }
+    body {
+      margin:0; color:var(--txt);
+      font-family:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+      font-size:14px; line-height:1.5; letter-spacing:-.01em;
+      background:
+        radial-gradient(900px 480px at 82% -10%, var(--bg-glow), transparent 60%),
+        radial-gradient(720px 560px at -6% 112%, var(--bg-glow-2), transparent 55%),
+        var(--bg);
+      background-attachment:fixed;
+      -webkit-font-smoothing:antialiased;
+      display:grid; place-items:center; padding:28px 18px;
+    }
+    .auth-wrap { width:100%; max-width:400px; }
+    .brand { display:flex; align-items:center; justify-content:center; gap:11px;
+      margin-bottom:22px; }
+    .brand img { width:34px; height:34px; border-radius:50%; display:block; }
+    .brand .wm { font-weight:700; font-size:19px; letter-spacing:-.03em; color:var(--txt); }
+    .brand .wm b { color:var(--green-hi); }
+
+    .card { background:linear-gradient(180deg,var(--card-hi),var(--card));
+      border:1px solid var(--line); border-radius:var(--radius);
+      padding:28px 26px; box-shadow:var(--shadow); }
+    .card h1 { font-size:20px; font-weight:700; letter-spacing:-.025em; margin:0 0 4px; }
+    .card .sub { color:var(--faint); font-size:13px; margin:0 0 20px; }
+
+    label { display:block; font-size:12px; color:var(--muted); font-weight:500;
+      margin:14px 0 6px; }
+    label:first-of-type { margin-top:0; }
+    input { width:100%; padding:11px 13px; background:var(--field); color:var(--txt);
+      border:1px solid var(--line); border-radius:10px; font-size:14px;
+      font-family:inherit; transition:.15s var(--ease); }
+    input::placeholder { color:var(--faint); }
+    input:focus { outline:none; border-color:var(--green-dim);
+      box-shadow:0 0 0 3px var(--glow); background:var(--field-focus); }
+
+    button.submit { width:100%; margin-top:22px; cursor:pointer; border:none;
+      border-radius:10px; padding:12px 16px; font-weight:600; font-size:14px;
+      font-family:inherit; color:var(--accent-ink);
+      background:linear-gradient(135deg,var(--accent),var(--accent-2));
+      box-shadow:0 1px 0 rgba(255,255,255,.14) inset, 0 10px 22px -12px var(--accent);
+      transition:.15s var(--ease); }
+    button.submit:hover { filter:brightness(1.06); transform:translateY(-1px); }
+    button.submit:active { transform:translateY(0); }
+    button.submit:focus-visible { outline:2px solid var(--green-hi); outline-offset:2px; }
+
+    .err { display:flex; align-items:flex-start; gap:9px; font-size:13px;
+      color:var(--red); background:var(--danger-bg); border:1px solid var(--danger-line);
+      border-radius:10px; padding:10px 13px; margin:0 0 18px; }
+    .err svg { width:16px; height:16px; flex:0 0 16px; margin-top:1px; stroke:currentColor;
+      fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+    .hint { color:var(--faint); font-size:11.5px; margin:6px 0 0; }
+    .alt { text-align:center; margin:20px 0 0; color:var(--muted); font-size:13px; }
+    .alt a { color:var(--green-hi); font-weight:600; text-decoration:none; }
+    .alt a:hover { text-decoration:underline; }
+
+    .pw-field { position:relative; }
+    .pw-toggle { position:absolute; right:8px; top:50%; transform:translateY(-50%);
+      display:grid; place-items:center; width:32px; height:32px; padding:0;
+      background:transparent; border:none; color:var(--faint); cursor:pointer;
+      border-radius:8px; }
+    .pw-toggle:hover { color:var(--txt); }
+    .pw-toggle svg { width:18px; height:18px; stroke:currentColor; fill:none;
+      stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+    .pw-field input { padding-right:44px; }
+
+    .foot { text-align:center; color:var(--faint); font-size:11px; margin-top:20px;
+      font-family:'JetBrains Mono',ui-monospace,monospace; letter-spacing:0; }
+  </style>
+</head>
+<body>
+  <main class="auth-wrap">
+    <div class="brand">
+      <img src="{{ logo_uri if logo_uri else '/static/logo_mark.png' }}" alt="">
+      <span class="wm">algo<b>foundry</b></span>
+    </div>
+
+    <div class="card">
+      {% if mode == 'login' %}
+        <h1>Sign in</h1>
+        <p class="sub">Welcome back — enter your credentials to continue.</p>
+      {% else %}
+        <h1>Create account</h1>
+        <p class="sub">Register with the access code your admin gave you.</p>
+      {% endif %}
+
+      {% if error %}
+      <div class="err" role="alert">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <span>{{ error }}</span>
+      </div>
+      {% endif %}
+
+      {% if mode == 'signup' and not signup_enabled %}
+      <div class="err" role="alert" style="color:var(--amber);background:rgba(230,169,58,.10);border-color:rgba(230,169,58,.30)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+        <span>Sign-up is currently disabled — no registration code has been configured.</span>
+      </div>
+      {% endif %}
+
+      <form method="post" action="/{{ mode }}" autocomplete="on">
+        <label for="username">Username</label>
+        <input id="username" name="username" value="{{ username or '' }}"
+               autocomplete="username" autocapitalize="none" spellcheck="false"
+               placeholder="your-handle" required autofocus>
+        {% if mode == 'signup' %}
+        <p class="hint">3–32 chars: lowercase letters, digits, dot, underscore or hyphen.</p>
+        {% endif %}
+
+        <label for="password">Password</label>
+        <div class="pw-field">
+          <input id="password" name="password" type="password"
+                 autocomplete="{{ 'current-password' if mode == 'login' else 'new-password' }}"
+                 placeholder="••••••••" required>
+          <button type="button" class="pw-toggle" aria-label="Show password"
+                  onclick="var i=document.getElementById('password');var s=i.type==='password';i.type=s?'text':'password';this.setAttribute('aria-label',s?'Hide password':'Show password');">
+            <svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+        {% if mode == 'signup' %}
+        <p class="hint">At least 8 characters.</p>
+
+        <label for="code">Registration code</label>
+        <input id="code" name="code" autocomplete="off" spellcheck="false"
+               placeholder="access code" required>
+        {% endif %}
+
+        <button class="submit" type="submit">
+          {{ 'Sign in' if mode == 'login' else 'Create account' }}
+        </button>
+      </form>
+
+      {% if mode == 'login' %}
+      <p class="alt">Need an account? <a href="/signup">Create one</a></p>
+      {% else %}
+      <p class="alt">Already have an account? <a href="/login">Sign in</a></p>
+      {% endif %}
+    </div>
+
+    <p class="foot">AlgoFoundry · private trading console</p>
+  </main>
+</body>
+</html>

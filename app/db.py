@@ -49,6 +49,7 @@ DEFAULTS: dict[str, Any] = {
     "allow_buy": True,
     "allow_sell": True,
     "webhook_secret": "",         # set on first run if empty
+    "signup_code": "",            # registration code required to create accounts
     # ---- Long-Term Portfolio Tracker (Trading 212) — lt_ prefixed keys ----
     "lt_t212_api_key": "",
     "lt_t212_api_secret": "",         # paired with lt_t212_api_key (Basic auth)
@@ -219,6 +220,41 @@ def _init_db_sqlite() -> None:
                    fetched_ts REAL
                )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS users (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   username TEXT UNIQUE NOT NULL,
+                   pw_hash TEXT NOT NULL,
+                   is_admin INTEGER DEFAULT 0,
+                   created_ts REAL,
+                   last_login_ts REAL
+               )"""
+        )
+        # Migration: add is_admin to a pre-existing users table.
+        _cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        if "is_admin" not in _cols:
+            conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS sessions (
+                   token TEXT PRIMARY KEY,
+                   username TEXT NOT NULL,
+                   created_ts REAL NOT NULL,
+                   expires_ts REAL NOT NULL
+               )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS portfolio_history (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   broker TEXT NOT NULL,
+                   date TEXT NOT NULL,
+                   ts REAL,
+                   invested REAL,
+                   market_value REAL,
+                   pnl REAL,
+                   currency TEXT DEFAULT 'GBP',
+                   UNIQUE(broker, date)
+               )"""
+        )
         # Seed any missing defaults.
         existing = {r["key"] for r in conn.execute("SELECT key FROM settings")}
         for key, val in DEFAULTS.items():
@@ -325,6 +361,40 @@ def _init_db_pg() -> None:
                        symbol TEXT PRIMARY KEY,
                        payload TEXT,
                        fetched_ts DOUBLE PRECISION
+                   )"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS users (
+                       id SERIAL PRIMARY KEY,
+                       username TEXT UNIQUE NOT NULL,
+                       pw_hash TEXT NOT NULL,
+                       is_admin INTEGER DEFAULT 0,
+                       created_ts DOUBLE PRECISION,
+                       last_login_ts DOUBLE PRECISION
+                   )"""
+            )
+            cur.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin INTEGER DEFAULT 0"
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS sessions (
+                       token TEXT PRIMARY KEY,
+                       username TEXT NOT NULL,
+                       created_ts DOUBLE PRECISION NOT NULL,
+                       expires_ts DOUBLE PRECISION NOT NULL
+                   )"""
+            )
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS portfolio_history (
+                       id SERIAL PRIMARY KEY,
+                       broker TEXT NOT NULL,
+                       date TEXT NOT NULL,
+                       ts DOUBLE PRECISION,
+                       invested DOUBLE PRECISION,
+                       market_value DOUBLE PRECISION,
+                       pnl DOUBLE PRECISION,
+                       currency TEXT DEFAULT 'GBP',
+                       UNIQUE(broker, date)
                    )"""
             )
             # Seed any missing defaults.
@@ -543,6 +613,26 @@ def get_holdings_snapshot(date: str) -> list[dict[str, Any]]:
                 "ORDER BY t212_ticker", (date,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+def snapshot_dates() -> list[str]:
+    """Return all distinct holdings-snapshot dates, oldest first."""
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT DISTINCT date FROM longterm_holdings_snapshot ORDER BY date"
+                )
+                return [r[0] for r in cur.fetchall()]
+            finally:
+                conn.close()
+    with _lock, _conn_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM longterm_holdings_snapshot ORDER BY date"
+        ).fetchall()
+    return [r["date"] for r in rows]
 
 
 def latest_snapshot_date() -> str | None:
@@ -868,3 +958,310 @@ def set_fundamentals_cache(symbol: str, payload: Any) -> None:
                 "  payload=excluded.payload, fetched_ts=excluded.fetched_ts",
                 (symbol, json.dumps(payload), time.time()),
             )
+
+
+# ---- Users & sessions (GUI authentication) ---------------------------------
+
+def count_users() -> int:
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM users")
+                n = cur.fetchone()[0]
+            finally:
+                conn.close()
+        return int(n)
+    with _lock, _conn_sqlite() as conn:
+        n = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+    return int(n)
+
+
+def get_user(username: str) -> dict[str, Any] | None:
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM users WHERE username=%s", (username,))
+                return _pg_fetchone(cur)
+            finally:
+                conn.close()
+    with _lock, _conn_sqlite() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE username=?", (username,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_user(username: str, pw_hash: str, is_admin: bool = False) -> bool:
+    """Insert a new user. Returns False if the username already exists."""
+    ts = time.time()
+    admin = 1 if is_admin else 0
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO users (username, pw_hash, is_admin, created_ts) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
+                    (username, pw_hash, admin, ts),
+                )
+                inserted = cur.rowcount > 0
+                conn.commit()
+            finally:
+                conn.close()
+        return inserted
+    with _lock, _conn_sqlite() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO users (username, pw_hash, is_admin, created_ts) "
+            "VALUES (?, ?, ?, ?)",
+            (username, pw_hash, admin, ts),
+        )
+        return cur.rowcount > 0
+
+
+def count_admins() -> int:
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM users WHERE is_admin=1")
+                n = cur.fetchone()[0]
+            finally:
+                conn.close()
+        return int(n)
+    with _lock, _conn_sqlite() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM users WHERE is_admin=1"
+        ).fetchone()["n"]
+    return int(n)
+
+
+def set_user_admin(username: str, is_admin: bool) -> None:
+    admin = 1 if is_admin else 0
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE users SET is_admin=%s WHERE username=%s",
+                    (admin, username),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    else:
+        with _lock, _conn_sqlite() as conn:
+            conn.execute(
+                "UPDATE users SET is_admin=? WHERE username=?", (admin, username)
+            )
+
+
+def earliest_username() -> str | None:
+    """Return the username of the first-created account, or ``None``."""
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT username FROM users ORDER BY id ASC LIMIT 1")
+                row = cur.fetchone()
+            finally:
+                conn.close()
+        return row[0] if row else None
+    with _lock, _conn_sqlite() as conn:
+        row = conn.execute(
+            "SELECT username FROM users ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+    return row["username"] if row else None
+
+
+def touch_user_login(username: str) -> None:
+    ts = time.time()
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE users SET last_login_ts=%s WHERE username=%s",
+                    (ts, username),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    else:
+        with _lock, _conn_sqlite() as conn:
+            conn.execute(
+                "UPDATE users SET last_login_ts=? WHERE username=?", (ts, username)
+            )
+
+
+def create_session(token: str, username: str, expires_ts: float) -> None:
+    ts = time.time()
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO sessions (token, username, created_ts, expires_ts) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (token, username, ts, expires_ts),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    else:
+        with _lock, _conn_sqlite() as conn:
+            conn.execute(
+                "INSERT INTO sessions (token, username, created_ts, expires_ts) "
+                "VALUES (?, ?, ?, ?)",
+                (token, username, ts, expires_ts),
+            )
+
+
+def get_session(token: str) -> dict[str, Any] | None:
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM sessions WHERE token=%s", (token,))
+                return _pg_fetchone(cur)
+            finally:
+                conn.close()
+    with _lock, _conn_sqlite() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE token=?", (token,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_session(token: str) -> None:
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM sessions WHERE token=%s", (token,))
+                conn.commit()
+            finally:
+                conn.close()
+    else:
+        with _lock, _conn_sqlite() as conn:
+            conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+
+
+def purge_expired_sessions() -> None:
+    now = time.time()
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM sessions WHERE expires_ts < %s", (now,))
+                conn.commit()
+            finally:
+                conn.close()
+    else:
+        with _lock, _conn_sqlite() as conn:
+            conn.execute("DELETE FROM sessions WHERE expires_ts < ?", (now,))
+
+
+# ---- Portfolio value history (per-broker growth chart) ---------------------
+
+def record_portfolio_snapshot(
+    broker: str,
+    date: str,
+    invested: float | None,
+    market_value: float | None,
+    pnl: float | None,
+    currency: str = "GBP",
+) -> None:
+    """Upsert one broker's total portfolio value for ``date`` (one row/day).
+
+    Amounts are stored in a single base currency (``currency``, GBP) so the
+    growth series is comparable over time regardless of the display currency.
+    """
+    ts = time.time()
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO portfolio_history "
+                    "(broker, date, ts, invested, market_value, pnl, currency) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT(broker, date) DO UPDATE SET "
+                    "  ts=EXCLUDED.ts, invested=EXCLUDED.invested, "
+                    "  market_value=EXCLUDED.market_value, pnl=EXCLUDED.pnl, "
+                    "  currency=EXCLUDED.currency",
+                    (broker, date, ts, invested, market_value, pnl, currency),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    else:
+        with _lock, _conn_sqlite() as conn:
+            conn.execute(
+                "INSERT INTO portfolio_history "
+                "(broker, date, ts, invested, market_value, pnl, currency) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(broker, date) DO UPDATE SET "
+                "  ts=excluded.ts, invested=excluded.invested, "
+                "  market_value=excluded.market_value, pnl=excluded.pnl, "
+                "  currency=excluded.currency",
+                (broker, date, ts, invested, market_value, pnl, currency),
+            )
+
+
+def get_portfolio_history(broker: str, limit: int = 365) -> list[dict[str, Any]]:
+    """Return a broker's value history, oldest first, capped to ``limit`` days."""
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT * FROM portfolio_history WHERE broker=%s "
+                    "ORDER BY date DESC LIMIT %s",
+                    (broker, limit),
+                )
+                rows = _pg_fetchall(cur)
+            finally:
+                conn.close()
+        return list(reversed(rows))
+    with _lock, _conn_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT * FROM portfolio_history WHERE broker=? "
+            "ORDER BY date DESC LIMIT ?",
+            (broker, limit),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def portfolio_history_dates(broker: str) -> set[str]:
+    """Return the set of dates already recorded for ``broker`` (for backfill)."""
+    if _USE_POSTGRES:
+        with _lock:
+            conn = _conn_pg()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT date FROM portfolio_history WHERE broker=%s", (broker,)
+                )
+                return {r[0] for r in cur.fetchall()}
+            finally:
+                conn.close()
+    with _lock, _conn_sqlite() as conn:
+        rows = conn.execute(
+            "SELECT date FROM portfolio_history WHERE broker=?", (broker,)
+        ).fetchall()
+    return {r["date"] for r in rows}
