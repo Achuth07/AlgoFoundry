@@ -509,24 +509,200 @@ def _ibkr_dashboard() -> dict:
     return panel
 
 
-def _dashboard_payload(display_ccy: str = "GBP") -> dict:
+# ---- growth chart ----------------------------------------------------------
+# The per-broker growth chart is a dependency-free inline SVG. History is stored
+# in GBP (see db.record_portfolio_snapshot); here it is scaled into the display
+# currency and turned into SVG path geometry.
+_CHART_W = 720
+_CHART_H = 200
+_CHART_PAD_T, _CHART_PAD_R, _CHART_PAD_B, _CHART_PAD_L = 14, 14, 10, 14
+_PF_BACKFILL_FLAG = "pf_hist_backfilled"
+
+
+def _sum_in_ccy(holdings: list[dict], ccy: str, rates: dict) -> dict:
+    """Sum native holdings' invested / market value / P&L converted into ``ccy``."""
+    inv = mv = pnl = 0.0
+    for h in holdings:
+        native = h.get("native_ccy") or ""
+        ci = fx.convert(h.get("invested"), native, ccy, rates)
+        cm = fx.convert(h.get("market_value"), native, ccy, rates)
+        cp = fx.convert(h.get("pnl"), native, ccy, rates)
+        inv += ci or 0.0
+        mv += cm or 0.0
+        pnl += cp or 0.0
+    return {"invested": inv, "market_value": mv, "pnl": pnl}
+
+
+def _backfill_t212_history(rates: dict) -> None:
+    """One-time backfill of T212 value history from the daily holdings snapshots.
+
+    Aggregates each snapshot date into a GBP portfolio value so the growth chart
+    has some past context on first use. Skipped when FX is unavailable so it can
+    retry later; runs at most once (guarded by a settings flag).
+    """
+    if db.get_setting(_PF_BACKFILL_FLAG) or rates.get("unavailable"):
+        return
+    try:
+        existing = db.portfolio_history_dates("t212")
+        for date in db.snapshot_dates():
+            if date in existing:
+                continue
+            inv = mv = 0.0
+            for r in db.get_holdings_snapshot(date):
+                qty = r.get("qty")
+                avg = r.get("avg_price")
+                cur = r.get("current_price")
+                ccy = r.get("currency") or _infer_t212_currency(r.get("t212_ticker") or "")
+                ci = fx.convert(
+                    (qty * avg) if (qty is not None and avg is not None) else None,
+                    ccy, "GBP", rates,
+                )
+                cm = fx.convert(
+                    (qty * cur) if (qty is not None and cur is not None) else None,
+                    ccy, "GBP", rates,
+                )
+                inv += ci or 0.0
+                mv += cm or 0.0
+            if mv:
+                db.record_portfolio_snapshot("t212", date, inv, mv, mv - inv)
+        db.set_setting(_PF_BACKFILL_FLAG, True)
+    except Exception as exc:  # noqa: BLE001 — history is a nice-to-have
+        db.log_event("error", action="pf_backfill", detail=f"backfill failed: {exc}")
+
+
+def _build_growth_chart(hist: list[dict], display_ccy: str, rates: dict) -> dict:
+    """Turn a broker's GBP value history into SVG geometry in ``display_ccy``."""
+    factor = fx.convert(1.0, "GBP", display_ccy, rates) or 1.0
+    pts = []
+    for r in hist:
+        mv = r.get("market_value")
+        inv = r.get("invested")
+        if mv is None:
+            continue
+        pts.append({
+            "date": r.get("date"),
+            "value": mv * factor,
+            "invested": (inv * factor) if inv is not None else None,
+        })
+
+    chart: dict = {"has_data": len(pts) >= 2, "n": len(pts), "viewbox": f"0 0 {_CHART_W} {_CHART_H}"}
+    if not pts:
+        return chart
+    if len(pts) < 2:
+        chart["last_value"] = pts[-1]["value"]
+        chart["last_date"] = pts[-1]["date"]
+        return chart
+
+    ys = [p["value"] for p in pts]
+    ys += [p["invested"] for p in pts if p["invested"] is not None]
+    lo, hi = min(ys), max(ys)
+    span = (hi - lo) or (abs(hi) or 1.0)
+    ymin, ymax = lo - span * 0.10, hi + span * 0.10
+    n = len(pts)
+    plot_w = _CHART_W - _CHART_PAD_L - _CHART_PAD_R
+    plot_h = _CHART_H - _CHART_PAD_T - _CHART_PAD_B
+    baseline = _CHART_PAD_T + plot_h
+
+    def px(i: int) -> float:
+        return _CHART_PAD_L + (plot_w * (i / (n - 1)))
+
+    def py(v: float) -> float:
+        return _CHART_PAD_T + plot_h * (1 - (v - ymin) / (ymax - ymin))
+
+    val_xy = [(round(px(i), 1), round(py(p["value"]), 1)) for i, p in enumerate(pts)]
+    line = "M " + " L ".join(f"{x} {y}" for x, y in val_xy)
+    area = (
+        f"{line} L {val_xy[-1][0]} {round(baseline,1)} "
+        f"L {val_xy[0][0]} {round(baseline,1)} Z"
+    )
+    inv_pts = [(round(px(i), 1), round(py(p["invested"]), 1))
+               for i, p in enumerate(pts) if p["invested"] is not None]
+    inv_line = ("M " + " L ".join(f"{x} {y}" for x, y in inv_pts)) if len(inv_pts) >= 2 else ""
+
+    sym = fx.symbol(display_ccy)
+
+    def _fmt(v):
+        return None if v is None else f"{sym}{v:,.2f}"
+
+    dots = []
+    if n <= 60:
+        for (x, y), p in zip(val_xy, pts):
+            dots.append({
+                "x": x, "y": y, "date": p["date"],
+                "value": p["value"], "invested": p["invested"],
+                "v_fmt": _fmt(p["value"]), "inv_fmt": _fmt(p["invested"]),
+            })
+
+    first, last = pts[0]["value"], pts[-1]["value"]
+    change = last - first
+    chart.update({
+        "line": line, "area": area, "inv_line": inv_line, "baseline": round(baseline, 1),
+        "dots": dots, "up": change >= 0,
+        "first_value": first, "last_value": last,
+        "first_date": pts[0]["date"], "last_date": pts[-1]["date"],
+        "since": _short_date(pts[0]["date"]),
+        "change": change, "change_pct": (change / first * 100) if first else None,
+        "data_min": lo, "data_max": hi,
+    })
+    return chart
+
+
+def _short_date(iso: str) -> str:
+    """Format an ISO date as e.g. ``21 Jul`` (with year only if not this year)."""
+    try:
+        d = _dt.date.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return iso or ""
+    base = f"{d.day} {d.strftime('%b')}"
+    return base if d.year == _dt.date.today().year else f"{base} {d.year}"
+
+
+# Chart timeframe options: dropdown value -> lookback window in days (None = all).
+_RANGE_DAYS = {"1w": 7, "1m": 31, "3m": 92, "6m": 183, "1y": 366, "all": None}
+
+
+def _filter_history(hist: list[dict], range_key: str) -> list[dict]:
+    """Trim history to the selected timeframe window."""
+    days = _RANGE_DAYS.get(range_key)
+    if not days:
+        return hist
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    return [r for r in hist if (r.get("date") or "") >= cutoff]
+
+
+def _dashboard_payload(display_ccy: str = "GBP", range_key: str = "all") -> dict:
     """Aggregate every broker panel plus combined totals in ``display_ccy``.
 
     All money columns are converted into ``display_ccy`` via :mod:`app.fx`, so
     per-broker and grand totals are single-currency and directly comparable.
+    Each broker's daily GBP value is recorded for the growth chart, whose
+    timeframe is bounded by ``range_key``.
     """
     display_ccy = (display_ccy or "GBP").upper()
     if display_ccy not in fx.SUPPORTED_DISPLAY:
         display_ccy = "GBP"
+    range_key = (range_key or "all").lower()
+    if range_key not in _RANGE_DAYS:
+        range_key = "all"
     rates = fx.get_rates()
+    today = _dt.date.today().isoformat()
+    _backfill_t212_history(rates)
 
     brokers = [_t212_dashboard(), _ibkr_dashboard()]
     for b in brokers:
-        b["holdings"] = [
-            _convert_holding(h, display_ccy, rates) for h in b["holdings"]
-        ]
+        native = b["holdings"]  # still in native currency at this point
+        # Record today's value (GBP) for connected brokers that returned data.
+        if native and not b.get("error"):
+            gbp = _sum_in_ccy(native, "GBP", rates)
+            if gbp["market_value"]:
+                db.record_portfolio_snapshot(
+                    b["key"], today, gbp["invested"], gbp["market_value"], gbp["pnl"]
+                )
+        b["holdings"] = [_convert_holding(h, display_ccy, rates) for h in native]
         b["holdings"].sort(key=lambda x: (x["market_value"] or 0.0), reverse=True)
         b["totals"] = _sum_totals(b["holdings"])
+        hist = _filter_history(db.get_portfolio_history(b["key"], 1000), range_key)
+        b["chart"] = _build_growth_chart(hist, display_ccy, rates)
 
     grand = {
         "invested": 0.0, "market_value": 0.0, "pnl": 0.0,
@@ -547,6 +723,7 @@ def _dashboard_payload(display_ccy: str = "GBP") -> dict:
         "display_ccy": display_ccy,
         "display_sym": fx.symbol(display_ccy),
         "supported_ccy": fx.SUPPORTED_DISPLAY,
+        "range_key": range_key,
         "fx": {
             "as_of": rates.get("date"),
             "ts": rates.get("ts"),
@@ -560,10 +737,13 @@ def _dashboard_payload(display_ccy: str = "GBP") -> dict:
 
 @app.get("/api/dashboard", response_class=HTMLResponse)
 def api_dashboard(
-    request: Request, ccy: str = "GBP", _: str = Depends(require_login)
+    request: Request,
+    ccy: str = "GBP",
+    range: str = "all",
+    _: str = Depends(require_login),
 ) -> HTMLResponse:
     return templates.TemplateResponse(
-        request, "_dashboard.html", _dashboard_payload(ccy),
+        request, "_dashboard.html", _dashboard_payload(ccy, range),
     )
 
 

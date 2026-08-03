@@ -414,6 +414,65 @@
     .dash-empty-hints li { font-size:13px; color:var(--muted); padding:11px 14px;
       background:var(--field); border:1px solid var(--line); border-radius:10px; }
 
+    /* per-broker growth chart */
+    .growth-wrap { margin:2px 0 18px; }
+    .growth-head { display:flex; align-items:center; justify-content:space-between;
+      gap:12px; margin-bottom:8px; }
+    .growth-title { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+      font-weight:700; color:var(--faint); }
+    .growth-change { display:inline-flex; align-items:center; gap:7px; font-size:14px;
+      font-weight:700; letter-spacing:-.01em; font-family:'JetBrains Mono',ui-monospace,monospace; }
+    .growth-change.pos { color:var(--green-hi); } .growth-change.neg { color:var(--red); }
+    .growth-change svg { width:15px; height:15px; stroke:currentColor; fill:none;
+      stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+    .growth-change .k-pct { font-size:11px; }
+    .growth-since { color:var(--faint); font-weight:500; font-size:11px; letter-spacing:0;
+      font-family:'Inter',-apple-system,sans-serif; }
+
+    .growth-svg { width:100%; height:auto; display:block;
+      background:color-mix(in srgb,var(--field) 60%, transparent);
+      border:1px solid var(--line); border-radius:12px; }
+    .g-area { stroke:none; }
+    .gg-0.pos { stop-color:var(--green); stop-opacity:.30; }
+    .gg-1.pos { stop-color:var(--green); stop-opacity:0; }
+    .gg-0.neg { stop-color:var(--red); stop-opacity:.26; }
+    .gg-1.neg { stop-color:var(--red); stop-opacity:0; }
+    .g-line { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+    .g-line.pos { stroke:var(--green-hi); } .g-line.neg { stroke:var(--red); }
+    .g-inv { fill:none; stroke:var(--faint); stroke-width:1.4; stroke-dasharray:4 4; opacity:.7; }
+    .g-dot { stroke:var(--panel); stroke-width:1.5; transition:r .12s var(--ease); }
+    .g-dot.pos { fill:var(--green-hi); } .g-dot.neg { fill:var(--red); }
+    .g-hit { fill:transparent; stroke:none; cursor:pointer; }
+    .g-node:hover .g-dot { r:5; }
+
+    /* floating value tooltip */
+    .chart-tip { position:fixed; z-index:1000; pointer-events:none;
+      background:var(--card-hi); border:1px solid var(--line-hi);
+      border-radius:10px; padding:8px 11px; box-shadow:var(--shadow);
+      font-size:12px; line-height:1.35; min-width:96px; }
+    .chart-tip[hidden] { display:none; }
+    .chart-tip .ct-date { color:var(--faint); font-size:10.5px;
+      font-family:'JetBrains Mono',ui-monospace,monospace; margin-bottom:2px; }
+    .chart-tip .ct-val { color:var(--txt); font-weight:700; font-size:14px;
+      font-family:'JetBrains Mono',ui-monospace,monospace; letter-spacing:-.01em; }
+    .chart-tip .ct-inv { color:var(--muted); font-size:11px; margin-top:2px;
+      font-family:'JetBrains Mono',ui-monospace,monospace; }
+
+    .growth-foot { display:flex; align-items:center; justify-content:space-between;
+      gap:10px; margin-top:7px; font-size:11px;
+      font-family:'JetBrains Mono',ui-monospace,monospace; }
+    .growth-legend { display:inline-flex; align-items:center; gap:6px; }
+    .growth-legend i { display:inline-block; width:12px; height:0; border-top-width:2px;
+      border-top-style:solid; margin-right:-2px; }
+    .growth-legend .lg-val.pos { border-top-color:var(--green-hi); }
+    .growth-legend .lg-val.neg { border-top-color:var(--red); }
+    .growth-legend .lg-inv { border-top-style:dashed; border-top-color:var(--faint); }
+    .growth-note { display:flex; align-items:center; gap:9px; font-size:12.5px;
+      margin:2px 0 16px; padding:12px 14px; border-radius:12px;
+      background:color-mix(in srgb,var(--field) 60%, transparent); border:1px solid var(--line); }
+    .growth-note svg { width:18px; height:18px; flex:0 0 18px; stroke:var(--faint);
+      fill:none; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
     @media (max-width:900px) {
       .kpi-grid { grid-template-columns:1fr; }
     }
@@ -578,32 +637,48 @@
               <p>Live holdings, invested capital and P&amp;L across every connected broker.</p>
             </div>
             <div class="dash-controls">
+              <label class="dash-ccy-lbl" for="dash-range">Range</label>
+              <select id="dash-range" name="range" class="dash-ccy"
+                      hx-get="/api/dashboard" hx-target="#dashboard-body" hx-swap="innerHTML"
+                      hx-trigger="change" hx-include="#dash-ccy"
+                      onchange="try{localStorage.setItem('af_dash_range',this.value)}catch(e){}"
+                      aria-label="Chart timeframe">
+                <option value="1w">1W</option>
+                <option value="1m">1M</option>
+                <option value="3m">3M</option>
+                <option value="6m">6M</option>
+                <option value="1y">1Y</option>
+                <option value="all" selected>All</option>
+              </select>
               <label class="dash-ccy-lbl" for="dash-ccy">Show in</label>
               <select id="dash-ccy" name="ccy" class="dash-ccy"
                       hx-get="/api/dashboard" hx-target="#dashboard-body" hx-swap="innerHTML"
-                      hx-trigger="change"
+                      hx-trigger="change" hx-include="#dash-range"
                       onchange="try{localStorage.setItem('af_dash_ccy',this.value)}catch(e){}"
                       aria-label="Display currency">
                 <option value="GBP">GBP · £</option>
                 <option value="USD">USD · $</option>
                 <option value="INR">INR · ₹</option>
               </select>
-              <button class="ghost" hx-get="/api/dashboard" hx-include="#dash-ccy"
+              <button class="ghost" hx-get="/api/dashboard" hx-include="#dash-ccy, #dash-range"
                       hx-target="#dashboard-body" hx-swap="innerHTML">Refresh</button>
             </div>
           </div>
-          {# Restore the saved currency before the body's `load` trigger fires,
-             so the initial fetch and the 30s poll both use it via hx-include. #}
+          {# Restore saved currency + range before the body's `load` trigger
+             fires, so the initial fetch and the 30s poll use them via hx-include. #}
           <script>
             (function () {
               try {
-                var v = localStorage.getItem('af_dash_ccy');
-                var sel = document.getElementById('dash-ccy');
-                if (v && sel) sel.value = v;
+                var c = localStorage.getItem('af_dash_ccy');
+                var cs = document.getElementById('dash-ccy');
+                if (c && cs) cs.value = c;
+                var r = localStorage.getItem('af_dash_range');
+                var rs = document.getElementById('dash-range');
+                if (r && rs) rs.value = r;
               } catch (e) {}
             })();
           </script>
-          <div id="dashboard-body" hx-get="/api/dashboard" hx-include="#dash-ccy"
+          <div id="dashboard-body" hx-get="/api/dashboard" hx-include="#dash-ccy, #dash-range"
                hx-trigger="load, every 30s">
             <p class="mut">Loading portfolio…</p>
           </div>

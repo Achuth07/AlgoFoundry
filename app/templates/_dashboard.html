@@ -18,6 +18,51 @@
 
 {%- macro pnlcls(amount) -%}{{ 'pos' if (amount or 0) >= 0 else 'neg' }}{%- endmacro -%}
 
+{%- macro growth_chart(c, key) -%}
+  {% if c and c.has_data %}
+  {% set tone = 'pos' if c.up else 'neg' %}
+  <div class="growth-wrap">
+    <div class="growth-head">
+      <div class="growth-title">Portfolio value <span class="mut">· {{ display_ccy }}</span></div>
+      <div class="growth-change {{ tone }}">
+        <svg viewBox="0 0 24 24" aria-hidden="true">{% if c.up %}<path d="M4 17l6-6 4 4 6-7"/><path d="M20 8V4"/>{% else %}<path d="M4 7l6 6 4-4 6 7"/><path d="M20 16v4"/>{% endif %}</svg>
+        {{ signed(c.change, display_ccy) }}{% if c.change_pct is not none %}
+        <span class="k-pct {{ tone }}">{{ '{:+.2f}'.format(c.change_pct) }}%</span>{% endif %}
+        {% if c.since %}<span class="growth-since">since {{ c.since }}</span>{% endif %}
+      </div>
+    </div>
+    <svg class="growth-svg" viewBox="{{ c.viewbox }}" preserveAspectRatio="xMidYMid meet"
+         role="img" aria-label="{{ key }} portfolio value from {{ c.first_date }} to {{ c.last_date }}">
+      <defs>
+        <linearGradient id="gg-{{ key }}" x1="0" y1="0" x2="0" y2="1">
+          <stop class="gg-0 {{ tone }}" offset="0"/>
+          <stop class="gg-1 {{ tone }}" offset="1"/>
+        </linearGradient>
+      </defs>
+      <path class="g-area" d="{{ c.area }}" fill="url(#gg-{{ key }})"/>
+      {% if c.inv_line %}<path class="g-inv" d="{{ c.inv_line }}" vector-effect="non-scaling-stroke"/>{% endif %}
+      <path class="g-line {{ tone }}" d="{{ c.line }}" vector-effect="non-scaling-stroke"/>
+      {% for d in c.dots %}
+      <g class="g-node" data-date="{{ d.date }}" data-value="{{ d.v_fmt }}"{% if d.inv_fmt %} data-invested="{{ d.inv_fmt }}"{% endif %}>
+        <circle class="g-hit" cx="{{ d.x }}" cy="{{ d.y }}" r="16"/>
+        <circle class="g-dot {{ tone }}" cx="{{ d.x }}" cy="{{ d.y }}" r="2.6"/>
+      </g>
+      {% endfor %}
+    </svg>
+    <div class="growth-foot mut">
+      <span>{{ c.first_date }}</span>
+      {% if c.inv_line %}<span class="growth-legend"><i class="lg-val {{ tone }}"></i>Value <i class="lg-inv"></i>Invested</span>{% endif %}
+      <span>{{ c.last_date }}</span>
+    </div>
+  </div>
+  {% elif c and c.n == 1 %}
+  <p class="growth-note mut">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 5-6"/></svg>
+    First snapshot recorded ({{ money(c.last_value, display_ccy) }}). The growth line appears once there are at least two days of history.
+  </p>
+  {% endif %}
+{%- endmacro -%}
+
 {% if not any_holdings %}
   {# Nothing to show — explain why and where to fix it. #}
   <div class="dash-empty">
@@ -103,6 +148,8 @@
       </div>
       {% endif %}
     </header>
+
+    {{ growth_chart(b.chart, b.key) }}
 
     {% if b.error %}
       <div class="broker-msg">
