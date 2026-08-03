@@ -103,9 +103,36 @@ def _startup() -> None:
     if "PYTEST_CURRENT_TEST" not in os.environ:
         try:
             from .longterm.scheduler import start_scheduler
-            start_scheduler(app)
+            sched = start_scheduler(app)
+            _schedule_portfolio_snapshots(sched)
         except Exception as exc:  # noqa: BLE001
             db.log_event("error", detail=f"lt scheduler init failed: {exc}")
+
+
+def _schedule_portfolio_snapshots(sched) -> None:
+    """Attach the daily portfolio-value snapshot job to the running scheduler.
+
+    Reuses the long-term feature's in-process ``BackgroundScheduler`` so history
+    accrues even on days the dashboard is never opened. No-op if the scheduler
+    isn't running (the view-driven recording in ``_dashboard_payload`` remains).
+    """
+    if sched is None:
+        return
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+        # Every 6h; recording is an idempotent upsert per (broker, date), so
+        # repeated fires just refresh today's row and a single failure never
+        # loses the day. Harmless under multiple workers for the same reason.
+        sched.add_job(
+            record_portfolio_snapshots,
+            CronTrigger(hour="*/6"),
+            id="pf_daily_snapshot",
+            replace_existing=True,
+        )
+        db.log_event("info", action="pf_snapshot", status="scheduled",
+                     detail="portfolio value snapshot job every 6h")
+    except Exception as exc:  # noqa: BLE001 — never block startup
+        db.log_event("error", action="pf_snapshot", detail=f"schedule failed: {exc}")
 
 
 # ---- auth ------------------------------------------------------------------
@@ -668,6 +695,38 @@ def _filter_history(hist: list[dict], range_key: str) -> list[dict]:
         return hist
     cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
     return [r for r in hist if (r.get("date") or "") >= cutoff]
+
+
+def record_portfolio_snapshots() -> None:
+    """Record today's GBP portfolio value for every connected broker.
+
+    The scheduled counterpart to the view-driven recording in
+    :func:`_dashboard_payload`: it fetches each broker independently, sums the
+    holdings into GBP and upserts one row per broker for today. Fully
+    self-contained and exception-safe so a broker outage never breaks the job.
+    """
+    try:
+        rates = fx.get_rates()
+    except Exception as exc:  # noqa: BLE001
+        db.log_event("error", action="pf_snapshot", detail=f"fx unavailable: {exc}")
+        return
+    today = _dt.date.today().isoformat()
+    for build in (_t212_dashboard, _ibkr_dashboard):
+        try:
+            b = build()
+            if not b.get("holdings") or b.get("error"):
+                continue
+            gbp = _sum_in_ccy(b["holdings"], "GBP", rates)
+            if gbp["market_value"]:
+                db.record_portfolio_snapshot(
+                    b["key"], today, gbp["invested"], gbp["market_value"], gbp["pnl"]
+                )
+                db.log_event(
+                    "info", action="pf_snapshot",
+                    detail=f"{b['key']} value £{gbp['market_value']:.2f} recorded for {today}",
+                )
+        except Exception as exc:  # noqa: BLE001 — isolate per broker
+            db.log_event("error", action="pf_snapshot", detail=f"{build.__name__}: {exc}")
 
 
 def _dashboard_payload(display_ccy: str = "GBP", range_key: str = "all") -> dict:
